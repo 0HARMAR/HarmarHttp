@@ -23,13 +23,21 @@ public class HarmarHttpServer {
     private ServerSocket serverSocket;
     private volatile boolean isRunning;
     private final FileCacheManager fileCache;
+    private final DosDefender dosDefender;
 
     public HarmarHttpServer(int port, String rootDir) {
+        this(port, rootDir,true);
+    }
+
+    public HarmarHttpServer(int port, String rootDir,boolean enableDosDefender) {
         this.port = port;
         this.rootDir = rootDir;
         this.threadPool = Executors.newFixedThreadPool(10);
         // config 100 file and 100M limit
         this.fileCache = new FileCacheManager(100,10 * 1024 * 1024);
+
+        this.dosDefender = enableDosDefender ?
+                new DosDefender(60_000, 100, 300_000) : null;
     }
 
     public void start() throws IOException {
@@ -86,6 +94,10 @@ public class HarmarHttpServer {
 
         closeSocketQuietly();
         System.out.println("Server stopped");
+
+        if (dosDefender != null) {
+            dosDefender.shutdown();
+        }
     }
 
     private void closeSocketQuietly() {
@@ -103,6 +115,14 @@ public class HarmarHttpServer {
             InputStream input = socket.getInputStream();
             OutputStream output = socket.getOutputStream();
         ) {
+            String clientIp = socket.getInetAddress().getHostAddress();
+
+            // check dos defender
+            if (dosDefender != null && !dosDefender.allowRequest(clientIp)) {
+                sendError(output,429,"Too Many Request",
+                        "You have exceeded the request limit");
+                return;
+            }
             BufferedReader reader = new BufferedReader(new InputStreamReader(input));
             HttpRequest request = parseRequest(reader);
 
