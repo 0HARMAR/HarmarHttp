@@ -124,10 +124,10 @@ public class HarmarHttpServer {
                 return;
             }
             BufferedReader reader = new BufferedReader(new InputStreamReader(input));
-            HttpRequest request = parseRequest(reader);
+            HttpRequest request = parseRequest(reader, input);
 
             if (request != null) {
-                respondToRequest(output,request);
+                respondToRequest(output,request, input);
             }
         } catch (IOException e) {
             if (isRunning) {
@@ -148,7 +148,7 @@ public class HarmarHttpServer {
         }
     }
 
-    private HttpRequest parseRequest(BufferedReader reader) throws IOException {
+    private HttpRequest parseRequest(BufferedReader reader, InputStream rawInput) throws IOException {
         String requestLine = reader.readLine();
         if (requestLine == null || requestLine.isEmpty()) {return null;}
 
@@ -167,12 +167,18 @@ public class HarmarHttpServer {
             request.headers.add(headerLine);
         }
 
+        if ("POST".equalsIgnoreCase(request.method)) {
+            request.hasBody = true;
+        }
         return request;
     }
 
-    private void respondToRequest(OutputStream output, HttpRequest request) throws IOException {
+    private void respondToRequest(OutputStream output, HttpRequest request, InputStream rawInput) throws IOException {
         if ("GET".equalsIgnoreCase(request.method)) {
             handleGetRequest(output,request.path);
+        } else if("POST".equalsIgnoreCase(request.method)) {
+            PostRequestHandler postRequestHandler = new PostRequestHandler();
+            postRequestHandler.handle(output, request, rawInput);
         } else  {
             sendError(output,501,"Not Implemented","Unsupported method: " + request.method);
         }
@@ -258,12 +264,12 @@ public class HarmarHttpServer {
         }
     }
 
-    private void sendJson(OutputStream output, int statusCode, String statusMsg, String json) throws IOException {
+    public static void sendJson(OutputStream output, int statusCode, String statusMsg, String json) throws IOException {
         byte[] content = json.getBytes(StandardCharsets.UTF_8);
         sendResponse(output,statusCode,statusMsg,"application/json",content);
     }
 
-    private void sendError(OutputStream output, int statusCode, String statusMsg, String message) throws IOException{
+    public static void sendError(OutputStream output, int statusCode, String statusMsg, String message) throws IOException{
         String html = String.format(
                 "<DOCTYPE html><html><head><title>%d %s</title><head>" +
                 "<body><h1>%d %s<h1><p>%s</p></body></html>",
@@ -273,7 +279,7 @@ public class HarmarHttpServer {
         sendResponse(output,statusCode,statusMsg,"text/html; charset=UTF-8",html.getBytes(StandardCharsets.UTF_8));
     }
 
-    private void sendResponse(OutputStream output, int statusCode, String statusMsg, String contentType, byte[] content) throws IOException {
+    public static void sendResponse(OutputStream output, int statusCode, String statusMsg, String contentType, byte[] content) throws IOException {
         PrintWriter writer = new PrintWriter(output);
 
         // response header
@@ -290,13 +296,5 @@ public class HarmarHttpServer {
         // response body
         output.write(content);
         output.flush();
-    }
-
-    // http request
-    private static class  HttpRequest {
-        String method;
-        String path;
-        String protocol;
-        List<String> headers = new ArrayList<>();
     }
 }
