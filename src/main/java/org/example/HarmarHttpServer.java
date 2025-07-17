@@ -24,6 +24,7 @@ public class HarmarHttpServer {
     private volatile boolean isRunning;
     private final FileCacheManager fileCache;
     private final DosDefender dosDefender;
+    private final Router router = new Router();
 
     public HarmarHttpServer(int port, String rootDir) {
         this(port, rootDir,true);
@@ -38,6 +39,26 @@ public class HarmarHttpServer {
 
         this.dosDefender = enableDosDefender ?
                 new DosDefender(60_000, 100, 300_000) : null;
+        registerBuildInRoutes();
+    }
+
+    private void registerBuildInRoutes() {
+        router.get("/api/time", ((request, output, pathParams) ->
+                sendJson(output, 200, "OK", "{ \"serverTime\": \"" + new Date() + "\" }")));
+
+        router.get("/api/user/{id}", ((request, output, pathParams) -> {
+            String userId = pathParams.get("id");
+            String json = "{ \"userId\": \"" + userId + "\", \"name\": \"User" + userId +"\" }";
+        }));
+
+        router.post("api/data", ((request, output, pathParams) -> {
+            // TODO
+            sendJson(output, 200, "Created", "{ \"status\": \"OK\" }");
+        }));
+    }
+
+    public void registerRoute(String method, String path, Router.RouteHandler handler) {
+        router.register(method,path, handler);
     }
 
     public void start() throws IOException {
@@ -174,6 +195,14 @@ public class HarmarHttpServer {
     }
 
     private void respondToRequest(OutputStream output, HttpRequest request, InputStream rawInput) throws IOException {
+        // 1. try to match route
+        Router.RouteMatch match = router.findMatch(request.method, request.path);
+        if (match != null) {
+            match.handler.handle(request, output, match.pathParams);
+            return;
+        }
+
+        // 2. if no route,execute default
         if ("GET".equalsIgnoreCase(request.method)) {
             handleGetRequest(output,request.path);
         } else if("POST".equalsIgnoreCase(request.method)) {
