@@ -1,13 +1,15 @@
 package org.example;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 // http request
 public class  HttpRequest {
     String method;
     String path;
     String protocol;
-    List<String> headers = new ArrayList<>();
+    Map<String, String> headers = new LinkedHashMap<>();
     boolean hasBody;
 }

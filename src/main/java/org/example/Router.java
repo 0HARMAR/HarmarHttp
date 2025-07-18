@@ -46,7 +46,7 @@ public class Router {
             String regex = pathPattern
                     .replace(".", "\\.")
                     .replace("{", "(?<")
-                    .replace("}", ">[^/]+");
+                    .replace("}", ">[^/]+)");
             pathPatterns.put(regex, Pattern.compile("^" + regex + "$"));
         }
 

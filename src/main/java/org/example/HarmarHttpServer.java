@@ -133,8 +133,8 @@ public class HarmarHttpServer {
 
     private void handleRequest(Socket socket) {
         try (
-            InputStream input = socket.getInputStream();
-            OutputStream output = socket.getOutputStream();
+                InputStream input = socket.getInputStream();
+                OutputStream output = socket.getOutputStream();
         ) {
             String clientIp = socket.getInetAddress().getHostAddress();
 
@@ -145,10 +145,10 @@ public class HarmarHttpServer {
                 return;
             }
             BufferedReader reader = new BufferedReader(new InputStreamReader(input));
-            HttpRequest request = parseRequest(reader, input);
+            HttpRequest request = parseRequest(reader);
 
             if (request != null) {
-                respondToRequest(output,request, input);
+                respondToRequest(output,request, reader);
             }
         } catch (IOException e) {
             if (isRunning) {
@@ -169,7 +169,7 @@ public class HarmarHttpServer {
         }
     }
 
-    private HttpRequest parseRequest(BufferedReader reader, InputStream rawInput) throws IOException {
+    private HttpRequest parseRequest(BufferedReader reader) throws IOException {
         String requestLine = reader.readLine();
         if (requestLine == null || requestLine.isEmpty()) {return null;}
 
@@ -177,24 +177,18 @@ public class HarmarHttpServer {
         if (parts.length < 2) {return null;}
 
         HttpRequest request = new HttpRequest();
-        request.method =parts[0];
+        request.method = parts[0];
         request.path =  parts[1];
         request.protocol = parts.length > 2 ? parts[2] : "HTTP/1.0";
 
-        // read all request headers
-        String headerLine;
-        while ((headerLine = reader.readLine()) != null) {
-            if (headerLine.isEmpty()) break;
-            request.headers.add(headerLine);
-        }
-
+        request.headers = HttpHeaderParser.parseHeaders(reader);
         if ("POST".equalsIgnoreCase(request.method)) {
             request.hasBody = true;
         }
         return request;
     }
 
-    private void respondToRequest(OutputStream output, HttpRequest request, InputStream rawInput) throws IOException {
+    private void respondToRequest(OutputStream output, HttpRequest request, BufferedReader reader) throws IOException {
         // 1. try to match route
         Router.RouteMatch match = router.findMatch(request.method, request.path);
         if (match != null) {
@@ -207,7 +201,7 @@ public class HarmarHttpServer {
             handleGetRequest(output,request.path);
         } else if("POST".equalsIgnoreCase(request.method)) {
             PostRequestHandler postRequestHandler = new PostRequestHandler();
-            postRequestHandler.handle(output, request, rawInput);
+            postRequestHandler.handle(output, request, reader);
         } else  {
             sendError(output,501,"Not Implemented","Unsupported method: " + request.method);
         }

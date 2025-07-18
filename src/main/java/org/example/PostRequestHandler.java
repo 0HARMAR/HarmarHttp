@@ -1,16 +1,16 @@
 package org.example;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+
+import static org.example.HttpHeaderParser.getContentLength;
+import static org.example.HttpHeaderParser.getContentType;
 
 public class PostRequestHandler {
     private static final int MAX_BODY_SIZE = 1024 * 1024;
 
-    public void handle(OutputStream output, HttpRequest request, InputStream rawInput) throws IOException {
+    public void handle(OutputStream output, HttpRequest request, BufferedReader reader) throws IOException {
         // check whether support file type
         if (!isContentTypeSupported(request)) {
             HarmarHttpServer.sendError(output, 415, "Unsupported Media Type",
@@ -19,7 +19,10 @@ public class PostRequestHandler {
         }
 
         // get request body
-        byte[] body = readRequestBody(rawInput, request);
+        char[] bodyChar = readRequestBody(reader, request);
+        String bodyStr = new String(bodyChar);
+        byte[] body = bodyStr.getBytes(StandardCharsets.UTF_8);
+
         if (body == null) {
             HarmarHttpServer.sendError(output, 413, "Payload Too Large",
                     "Request body exceeds 1MB size limit");
@@ -37,52 +40,28 @@ public class PostRequestHandler {
         }
     }
 
-    private byte[] readRequestBody(InputStream input, HttpRequest request) throws IOException {
+    private char[] readRequestBody(BufferedReader reader, HttpRequest request) throws IOException {
         int contentLength = getContentLength(request.headers);
         if (contentLength <= 0 || contentLength > MAX_BODY_SIZE) {
             return null;
         }
 
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        byte[] data = new byte[1024];
-        int bytesRead;
-        int totalRead = 0;
+        char[] buffer = new char[contentLength];
+        reader.read(buffer, 0, contentLength);
 
-        while(totalRead < contentLength &&
-                (bytesRead = input.read(data, 0, Math.min(data.length, contentLength - totalRead))) != -1) {
-            buffer.write(data, 0, bytesRead);
-            totalRead += bytesRead;
+        System.out.println("buffer: ");
+        for (int i = 0; i < contentLength; i++) {
+            System.out.print(buffer[i]);
         }
 
-        return buffer.toByteArray();
+        return buffer;
     }
 
-    private int getContentLength(List<String> headers) {
-        for (String header : headers) {
-            if (header.toLowerCase().startsWith("content-length")) {
-                try {
-                    return Integer.parseInt(header.substring(15).trim());
-                } catch (NumberFormatException e) {
-                    return -1;
-                }
-            }
-        }
-        return -1;
-    }
 
     private boolean isContentTypeSupported(HttpRequest request) {
         String contentType = getContentType(request.headers);
         return "application/x-www-form-urlencoded".equals(contentType) ||
                 "application/json".equals(contentType);
-    }
-
-    private String getContentType(List<String> headers) {
-        for (String header : headers) {
-            if (header.toLowerCase().startsWith("content-type")) {
-                return header.substring(13).split(";")[0].trim();
-            }
-        }
-        return null;
     }
 
     private void handleEcho(OutputStream output, byte[] body, HttpRequest request) throws IOException {
