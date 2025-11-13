@@ -43,7 +43,7 @@ public class HttpHeaderParser {
             if ("host".equals(currentKey) && !headers.containsKey("host")) {
                 // remove port(if exist)
                 int portIndex = value.indexOf(':');
-                if (portIndex == -1) {
+                if (portIndex != -1) {
                     value = value.substring(0, portIndex);
                 }
             }

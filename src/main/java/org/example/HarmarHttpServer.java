@@ -1,60 +1,93 @@
 package org.example;
 
-import javax.xml.crypto.Data;
+import org.example.monitor.MonitorEndpoints;
+import org.example.monitor.PerformanceMonitor;
+import org.example.security.DosDefender;
+
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
-import java.nio.charset.StandardCharsets;
+import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
 import java.util.Date;
-import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 public class HarmarHttpServer {
-    private final int port;
+    // monitor fields
+    private final PerformanceMonitor performanceMonitor;
+    private final MonitorEndpoints monitorEndpoints;
+    private final boolean enableMonitoring;
+
+    private int port = 80;
     private final String rootDir;
-    private final ExecutorService threadPool;
-    private ServerSocket serverSocket;
     private volatile boolean isRunning;
     private final FileCacheManager fileCache;
     private final DosDefender dosDefender;
     private final Router router = new Router();
+    private final ConnectionManager connectionManager =
+            new ConnectionManager(this, port, 8);
 
-    public HarmarHttpServer(int port, String rootDir) {
-        this(port, rootDir,true);
+    public HarmarHttpServer(int port, String rootDir) throws IOException {
+        this(port, rootDir,true, true);
     }
 
-    public HarmarHttpServer(int port, String rootDir,boolean enableDosDefender) {
+    public HarmarHttpServer(int port, String rootDir,boolean enableDosDefender, boolean enableMonitoring) throws IOException {
         this.port = port;
         this.rootDir = rootDir;
-        this.threadPool = Executors.newFixedThreadPool(10);
         // config 100 file and 100M limit
         this.fileCache = new FileCacheManager(100,10 * 1024 * 1024);
 
         this.dosDefender = enableDosDefender ?
                 new DosDefender(60_000, 100, 300_000) : null;
+
+        // init monitor
+        this.enableMonitoring = enableMonitoring;
+        if (enableMonitoring) {
+            this.performanceMonitor = new PerformanceMonitor();
+            this.monitorEndpoints = new MonitorEndpoints(performanceMonitor);
+        } else {
+            this.performanceMonitor = null;
+            this.monitorEndpoints = null;
+        }
+
         registerBuildInRoutes();
     }
 
     private void registerBuildInRoutes() {
         router.get("/api/time", ((request, output, pathParams) ->
-                sendJson(output, 200, "OK", "{ \"serverTime\": \"" + new Date() + "\" }")));
+                sendResponse(output, HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message, "application/json",
+                        ("{ \"serverTime\": \"" + new Date() + "\" }".getBytes()).getBytes())));
 
-        router.get("/api/user/{id}", ((request, output, pathParams) -> {
+        router.get("/api/user/{id}", (request, output, pathParams) -> {
             String userId = pathParams.get("id");
-            String json = "{ \"userId\": \"" + userId + "\", \"name\": \"User" + userId +"\" }";
-        }));
+            String json = "{ \"userId\": \"" + userId + "\", \"name\": \"User" + userId + "\" }";
+
+            sendResponse(
+                    output,
+                    HttpResponse.HttpStatus.OK.code,
+                    HttpResponse.HttpStatus.OK.message,
+                    "application/json",
+                    json.getBytes()
+            );
+        });
+
+
 
         router.post("api/data", ((request, output, pathParams) -> {
             // TODO
-            sendJson(output, 200, "Created", "{ \"status\": \"OK\" }");
+            sendResponse(output, HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message,
+                    "application/json", "{ \"status\": \"OK\" }".getBytes());
         }));
+
+        // register monitor endpoint
+        if (enableMonitoring && monitorEndpoints != null) {
+            monitorEndpoints.registerEndPoints(this);
+        }
     }
 
     public void registerRoute(String method, String path, Router.RouteHandler handler) {
@@ -64,13 +97,11 @@ public class HarmarHttpServer {
     public void start() throws IOException {
         if (isRunning) return;
 
-        this.serverSocket = new ServerSocket(port);
+        connectionManager.start();
         this.isRunning = true;
 
         // validate is the rootDir exist
         validateRootDirectory();
-
-        new Thread(this::acceptConnections,"Server-Acceptor").start();
     }
 
     private void validateRootDirectory() throws IOException {
@@ -82,38 +113,14 @@ public class HarmarHttpServer {
             throw new IOException(String.format("The root directory %s is not a directory.", rootPath));
         }
     }
-    private void acceptConnections() {
-        System.out.println("Server started at port: " + this.port + "Serving " + this.rootDir);
-
-        try {
-            while (isRunning) {
-                Socket clientSocker = serverSocket.accept();
-                threadPool.execute(() -> handleRequest(clientSocker));
-            }
-        } catch (SocketException e) {
-            if (isRunning) {
-                System.err.println("Socket error: " + e.getMessage());
-            }
-        } catch (IOException e) {
-            if (isRunning) {
-                System.err.println("IO error: " + e.getMessage());
-            }
-        }
-    }
 
     public void stop() {
         if (!isRunning) return;
 
+        connectionManager.shutdown();
+
         isRunning = false;
-        threadPool.shutdown();
 
-        try {
-            threadPool.awaitTermination(2, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-
-        closeSocketQuietly();
         System.out.println("Server stopped");
 
         if (dosDefender != null) {
@@ -121,38 +128,50 @@ public class HarmarHttpServer {
         }
     }
 
-    private void closeSocketQuietly() {
-        try {
-            if (serverSocket != null && !serverSocket.isClosed()) {
-                serverSocket.close();
-            }
-        } catch (IOException e) {
-            System.err.println("Error closing server socket: " + e.getMessage());
-        }
-    }
-
     private void handleRequest(Socket socket) {
+        long startTime = System.currentTimeMillis();
+        HttpRequest request = null;
+
         try (
                 InputStream input = socket.getInputStream();
                 OutputStream output = socket.getOutputStream();
         ) {
             String clientIp = socket.getInetAddress().getHostAddress();
 
+            // record request start
+            if (enableMonitoring && performanceMonitor != null) {
+                performanceMonitor.recordRequestStart();
+            }
+
             // check dos defender
             if (dosDefender != null && !dosDefender.allowRequest(clientIp)) {
-                sendError(output,429,"Too Many Request",
-                        "You have exceeded the request limit");
+                sendResponse(output, HttpResponse.HttpStatus.TOO_MANY_REQUESTS.code,
+                        HttpResponse.HttpStatus.TOO_MANY_REQUESTS.message, "text/html; charset=utf8", "You have exceeded the request limit".getBytes());
                 return;
             }
+            // get request
             BufferedReader reader = new BufferedReader(new InputStreamReader(input));
-            HttpRequest request = parseRequest(reader);
+            request = parseRequest(reader);
 
+            // TODO
             if (request != null) {
                 respondToRequest(output,request, reader);
+            }
+
+            // record request complete
+            if (enableMonitoring && performanceMonitor != null) {
+                long responseTime = System.currentTimeMillis() - startTime;
+                // example status code is 200
+                performanceMonitor.recordRequestComplete(responseTime, 200);
             }
         } catch (IOException e) {
             if (isRunning) {
                 System.err.println("Request processing error: " + e.getMessage());
+            }
+
+            // record error
+            if (enableMonitoring && performanceMonitor != null) {
+                performanceMonitor.recordError(e.getClass().getSimpleName());
             }
         } finally {
             closeSocketQuietly(socket);
@@ -202,18 +221,17 @@ public class HarmarHttpServer {
         } else if("POST".equalsIgnoreCase(request.method)) {
             PostRequestHandler postRequestHandler = new PostRequestHandler();
             postRequestHandler.handle(output, request, reader);
-        } else  {
-            sendError(output,501,"Not Implemented","Unsupported method: " + request.method);
+        } else if ("HEAD".equalsIgnoreCase(request.method)) {
+            HeadRequestHandler headRequestHandler = new HeadRequestHandler();
+            headRequestHandler.handle(output, request);
+        }
+        else  {
+            sendResponse(output, HttpResponse.HttpStatus.NOT_IMPLEMENTED.code, HttpResponse.HttpStatus.NOT_IMPLEMENTED.message,
+                    "text/html", ("Not Implemented" + request.method).getBytes());
         }
     }
 
-    private void handleGetRequest(OutputStream output, String path) throws IOException{
-        // api endpoint process
-        if ("/api/time".equals(path)) {
-            sendJson(output,200,"OK","{ \"serverTime\": \"" + new Date() + "\" }");
-            return;
-        }
-
+    private void handleGetRequest(OutputStream output, String path) throws IOException {
         if ("/".equals(path)) {
             path = "index.html";
         }
@@ -228,7 +246,8 @@ public class HarmarHttpServer {
 
         // security auth
         if (!requestPath.startsWith(rootPath)) {
-            sendError(output,403,"Forbidden","access to this resource is not allow");
+            sendResponse(output, HttpResponse.HttpStatus.FORBIDDEN.code, HttpResponse.HttpStatus.FORBIDDEN.message,
+                    "text/html; charset=utf8", "403 FORBIDDEN".getBytes());
             return;
         }
 
@@ -238,7 +257,8 @@ public class HarmarHttpServer {
             // check cache
             FileCacheManager.CacheEntity cached = fileCache.get(fileKey);
             if (cached != null) {
-                sendResponse(output,200,"OK",cached.contentType,cached.content);
+                sendResponse(output, HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message,
+                        cached.contentType, cached.content);
                 return;
             }
 
@@ -250,9 +270,10 @@ public class HarmarHttpServer {
             // update cache
             fileCache.put(fileKey,
                     new FileCacheManager.CacheEntity(content,contentType,lastModified));
-            sendResponse(output,200,"OK",contentType,content);
+            sendResponse(output, HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message, contentType, content);
         } else {
-            sendError(output,404,"Not Found","Resource not found" + path);
+            sendResponse(output, HttpResponse.HttpStatus.NOT_FOUND.code, HttpResponse.HttpStatus.NOT_FOUND.message,
+                    "text/html; charset=utf-8", buildErrorHtml(HttpResponse.HttpStatus.NOT_FOUND.code, HttpResponse.HttpStatus.NOT_FOUND.message));
         }
     }
 
@@ -287,37 +308,49 @@ public class HarmarHttpServer {
         }
     }
 
-    public static void sendJson(OutputStream output, int statusCode, String statusMsg, String json) throws IOException {
-        byte[] content = json.getBytes(StandardCharsets.UTF_8);
-        sendResponse(output,statusCode,statusMsg,"application/json",content);
+    public static void sendResponse(OutputStream output, int statusCode, String statusMsg, String contentType, byte[] Content) throws IOException {
+        HttpResponse response = new HttpResponse(statusCode);
+        response.setStatusMessage(statusMsg);
+
+        response.setDefaultheaders();
+        response.setHeader("Cache-Control", "no-cache");
+        response.setContent(Content, contentType);
+
+        response.send(output);
     }
 
-    public static void sendError(OutputStream output, int statusCode, String statusMsg, String message) throws IOException{
-        String html = String.format(
-                "<DOCTYPE html><html><head><title>%d %s</title><head>" +
-                "<body><h1>%d %s<h1><p>%s</p></body></html>",
-                statusCode,statusMsg,statusCode,statusMsg,message
-        );
-
-        sendResponse(output,statusCode,statusMsg,"text/html; charset=UTF-8",html.getBytes(StandardCharsets.UTF_8));
+    private byte[] buildErrorHtml(int statusCode, String statusMsg) {
+        return ("<!DOCTYPE html>\n" +
+                        "<html lang=\"en\">\n" +
+                        "<head>\n" +
+                        "    <meta charset=\"UTF-8\">\n" +
+                        "    <title>" + statusCode + " " + statusMsg + "</title>\n" +
+                        "    <style>\n" +
+                        "        body { font-family: Arial, sans-serif; background-color: #f8f8f8; text-align: center; padding: 50px; }\n" +
+                        "        h1 { font-size: 48px; color: #cc0000; }\n" +
+                        "        p { font-size: 20px; color: #333; }\n" +
+                        "    </style>\n" +
+                        "</head>\n" +
+                        "<body>\n" +
+                        "    <h1>" + statusCode + " " + statusMsg + "</h1>\n" +
+                        "    <p>The server returned an error while processing your request.</p>\n" +
+                        "</body>\n" +
+                        "</html>").getBytes();
     }
 
-    public static void sendResponse(OutputStream output, int statusCode, String statusMsg, String contentType, byte[] content) throws IOException {
-        PrintWriter writer = new PrintWriter(output);
+    public void handleRawRequest(AsynchronousSocketChannel channel, String rawRequest) {
+        try {
+            BufferedReader reader = new BufferedReader(new StringReader(rawRequest));
+            HttpRequest request = parseRequest(reader);
+            StringWriter sw = new StringWriter();
+            ByteArrayOutputStream responseStream = new ByteArrayOutputStream();
+            respondToRequest(responseStream, request, null);
+            String response = responseStream.toString();
 
-        // response header
-        writer.printf("HTTP/1.1 %d %s\n", statusCode, statusMsg);
-        writer.printf("Content-Type: %s\n", contentType);
-        writer.printf("Content-Length: %d\n", content.length);
-        writer.printf("Cache-Control: no-cache\n");
-        writer.printf("Server: Harmar Http Server\n");
-        writer.printf("Date: %s\n", new Date());
-        writer.printf("Connection: close\n");
-        writer.printf("%n");
-        writer.flush();
-
-        // response body
-        output.write(content);
-        output.flush();
+            connectionManager.writeResponse(channel, response);
+        } catch (Exception e) {
+            e.printStackTrace();
+            connectionManager.writeResponse(channel, "HTTP/1.1 500 Internal Server Error\r\n\r\n" + e.getMessage());
+        }
     }
 }

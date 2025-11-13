@@ -68,4 +68,18 @@ public class FileCacheManager {
             this.lastModified = lastModified;
         }
     }
+
+    /*
+     * 隐藏功能:缓存清空术!
+     * 　∧＿∧　
+     * （｡･ω･｡)つ━☆・*。
+     * ⊂　　 ノ 　　　・゜+.
+     * 　しーＪ　　　°。+ *´¨)
+     * 　　　　　　　　　.· ´¸.·*´¨)
+     * 　　　　　　　　　　(¸.·´ (¸.·'* ☆ 咻咻!
+     */
+    public void clearCache() {
+        cache.clear();
+        currentSize = 0;
+    }
 }

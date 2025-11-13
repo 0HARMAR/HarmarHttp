@@ -13,8 +13,9 @@ public class PostRequestHandler {
     public void handle(OutputStream output, HttpRequest request, BufferedReader reader) throws IOException {
         // check whether support file type
         if (!isContentTypeSupported(request)) {
-            HarmarHttpServer.sendError(output, 415, "Unsupported Media Type",
-                    "Only application/x-www-form-urlencoded and application/json are supported");
+            HarmarHttpServer.sendResponse(output, HttpResponse.HttpStatus.MEDIA_TYPE_NOT_SUPPORTED.code,
+                    HttpResponse.HttpStatus.MEDIA_TYPE_NOT_SUPPORTED.message, "text/html; charset=utf8",
+                    "Only application/x-www-form-urlencoded and application/json are supported".getBytes());
             return;
         }
 
@@ -24,8 +25,9 @@ public class PostRequestHandler {
         byte[] body = bodyStr.getBytes(StandardCharsets.UTF_8);
 
         if (body == null) {
-            HarmarHttpServer.sendError(output, 413, "Payload Too Large",
-                    "Request body exceeds 1MB size limit");
+            HarmarHttpServer.sendResponse(output, HttpResponse.HttpStatus.PAYLOAD_TOO_LARGE.code,
+                    HttpResponse.HttpStatus.PAYLOAD_TOO_LARGE.message, "text/html; charset=utf8",
+                    "Request body exceeds 1MB size limit".getBytes());
             return;
         }
 
@@ -35,8 +37,9 @@ public class PostRequestHandler {
         } else if ("/api/login".equals(request.path)) {
             handleLogin(output, body, request);
         } else {
-            HarmarHttpServer.sendError(output, 404, "Not Found",
-                    "No Post Handler for path: " +  request.path);
+            HarmarHttpServer.sendResponse(output, HttpResponse.HttpStatus.NOT_FOUND.code,
+                    HttpResponse.HttpStatus.NOT_MODIFIED.message, "text/html; charset=utf8",
+                    ("No Post Handler for path: " +  request.path).getBytes());
         }
     }
 
@@ -66,7 +69,7 @@ public class PostRequestHandler {
 
     private void handleEcho(OutputStream output, byte[] body, HttpRequest request) throws IOException {
         String contentType = getContentType(request.headers);
-        HarmarHttpServer.sendResponse(output, 200, "OK", contentType, body);
+
     }
 
     private void handleLogin(OutputStream output, byte[] body, HttpRequest request) throws IOException {
@@ -75,6 +78,7 @@ public class PostRequestHandler {
         String response = String.format("{\"status\":\"success\",\"message\":\"Login processed: %s\"",
                 requestBody.replace("\"", "\\\""));
 
-        HarmarHttpServer.sendJson(output, 200, "OK", response);
+        HarmarHttpServer.sendResponse(output, HttpResponse.HttpStatus.OK.code,
+                HttpResponse.HttpStatus.OK.message, "application/json", response.getBytes());
     }
 }

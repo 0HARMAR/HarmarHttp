@@ -47,7 +47,7 @@ public class Router {
                     .replace(".", "\\.")
                     .replace("{", "(?<")
                     .replace("}", ">[^/]+)");
-            pathPatterns.put(regex, Pattern.compile("^" + regex + "$"));
+            pathPatterns.put(pathPattern, Pattern.compile("^" + regex + "$"));
         }
 
         routerEntries.sort(Comparator.comparingInt(e -> e.priority));
