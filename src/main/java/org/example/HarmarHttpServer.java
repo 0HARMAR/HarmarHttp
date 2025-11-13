@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Date;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -24,8 +25,8 @@ public class HarmarHttpServer {
     private final boolean enableMonitoring;
 
     private int port = 80;
-    private final String rootDir;
     private volatile boolean isRunning;
+    public static String rootDir;
     private final FileCacheManager fileCache;
     private final DosDefender dosDefender;
     private final Router router = new Router();
@@ -263,7 +264,7 @@ public class HarmarHttpServer {
             }
 
             // cache not hit
-            byte[] content = Files.readAllBytes(requestPath);
+            byte[] content = Files.readAllBytes(normalizePath(rootPath, String.valueOf(requestPath)));
             String contentType = determineContentType(requestPath);
             long lastModified = Files.getLastModifiedTime(requestPath).toMillis();
 
@@ -277,7 +278,7 @@ public class HarmarHttpServer {
         }
     }
 
-    private Path normalizePath(Path base, String path) {
+    public static Path normalizePath(Path base, String path) {
         String sanitizedPath = path.replace('\\','/')
                 .replace("..","");
 
@@ -286,7 +287,7 @@ public class HarmarHttpServer {
                 .normalize();
     }
 
-    private String determineContentType(Path filePath) {
+    public static String determineContentType(Path filePath) {
         String fileName = filePath.getFileName().toString();
         int dotIndex = fileName.lastIndexOf(".");
         if (dotIndex < 0) return "application/octet-stream";
@@ -308,13 +309,41 @@ public class HarmarHttpServer {
         }
     }
 
-    public static void sendResponse(OutputStream output, int statusCode, String statusMsg, String contentType, byte[] Content) throws IOException {
+    public static void sendResponse(OutputStream output, int statusCode, String statusMsg,
+                                    String contentType, byte[] content, Map<String, String> headers) throws IOException {
         HttpResponse response = new HttpResponse(statusCode);
         response.setStatusMessage(statusMsg);
 
         response.setDefaultheaders();
         response.setHeader("Cache-Control", "no-cache");
-        response.setContent(Content, contentType);
+        response.setContent(content, contentType);
+
+        // add extra headers
+        if (headers != null) {
+            headers.forEach(response::setHeader);
+        }
+
+        response.send(output);
+    }
+    public static void sendResponse(OutputStream output, int statusCode, String statusMsg, String contentType, byte[] content) throws IOException {
+        HttpResponse response = new HttpResponse(statusCode);
+        response.setStatusMessage(statusMsg);
+
+        response.setDefaultheaders();
+        response.setHeader("Cache-Control", "no-cache");
+        response.setContent(content, contentType);
+
+        response.send(output);
+    }
+
+    public static void sendHEADResponse(OutputStream output, int statusCode, String statusMsg, String contentType, String contentLength) throws IOException {
+        HttpResponse response = new HttpResponse(statusCode);
+        response.setStatusMessage(statusMsg);
+
+        response.setDefaultheaders();
+        response.setHeader("Cache-Control", "no-cache");
+        response.setHeader("Content-Type", contentType);
+        response.setHeader("Content-Length", String.valueOf(contentLength));
 
         response.send(output);
     }
@@ -345,7 +374,7 @@ public class HarmarHttpServer {
             StringWriter sw = new StringWriter();
             ByteArrayOutputStream responseStream = new ByteArrayOutputStream();
             respondToRequest(responseStream, request, null);
-            String response = responseStream.toString();
+            byte[] response = responseStream.toByteArray();
 
             connectionManager.writeResponse(channel, response);
         } catch (Exception e) {

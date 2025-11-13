@@ -89,6 +89,27 @@ public class ConnectionManager {
         });
     }
 
+    public void writeResponse(AsynchronousSocketChannel client, byte[] data) {
+        ByteBuffer buffer = ByteBuffer.wrap(data);
+        client.write(buffer, buffer, new CompletionHandler<Integer, ByteBuffer>() {
+            @Override
+            public void completed(Integer result, ByteBuffer attachment) {
+                if (attachment.hasRemaining()) {
+                    client.write(attachment, attachment, this);
+                } else {
+                    close(client);
+                }
+            }
+
+            @Override
+            public void failed(Throwable exc, ByteBuffer attachment) {
+                System.err.println("❌ Write failed: " + exc.getMessage());
+                close(client);
+            }
+        });
+    }
+
+
     private void close(AsynchronousSocketChannel client) {
         try {
             client.close();

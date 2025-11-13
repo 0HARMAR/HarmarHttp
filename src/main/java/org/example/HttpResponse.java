@@ -106,24 +106,25 @@ public class HttpResponse {
     }
 
     public void send(OutputStream output) throws IOException {
-        try (PrintWriter writer = new PrintWriter(
-                new OutputStreamWriter(output, StandardCharsets.ISO_8859_1)
-        )) {
-            writer.printf("HTTP1.1/ %d %s%n", statusCode, statusMessage);
-
-            for (Map.Entry<String, String> entry : headers.entrySet()) {
-                writer.printf("%s : %s%n", entry.getKey(), entry.getValue());
-            }
-
-            writer.println();
-            writer.flush();
-
-            if (body != null && body.length > 0) {
-                output.write(body);
-                output.flush();
-            }
+        // 构造头部
+        StringBuilder header = new StringBuilder();
+        header.append("HTTP/1.0 ").append(statusCode).append(" ").append(statusMessage).append("\r\n");
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            header.append(entry.getKey()).append(": ").append(entry.getValue()).append("\r\n");
         }
+        header.append("\r\n"); // 头部结束
+
+        // 写头部
+        output.write(header.toString().getBytes(StandardCharsets.ISO_8859_1));
+
+        // 写正文（支持二进制）
+        if (body != null && body.length > 0) {
+            output.write(body);
+        }
+
+        output.flush();
     }
+
     private static String getHttpDate() {
         SimpleDateFormat sdf = new SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", Locale.US);
         sdf.setTimeZone(TimeZone.getTimeZone("GMT"));

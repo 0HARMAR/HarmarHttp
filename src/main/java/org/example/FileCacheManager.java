@@ -20,7 +20,9 @@ public class FileCacheManager {
                 new LinkedHashMap<String,CacheEntity>(maxEntries,0.75f,true) {
                     @Override
                     protected boolean removeEldestEntry(Map.Entry<String, CacheEntity> eldest) {
-                        return size() > maxEntries || currentSize > maxEntries;
+                        synchronized (FileCacheManager.this) {
+                            return size() > maxEntries || currentSize > maxSizeBytes;
+                        }
                     }
                 }
         );
