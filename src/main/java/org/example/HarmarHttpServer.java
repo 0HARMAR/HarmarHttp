@@ -1,22 +1,24 @@
 package org.example;
 
-import org.example.monitor.MonitorEndpoints;
-import org.example.monitor.PerformanceMonitor;
-import org.example.security.DosDefender;
-
-import java.io.*;
-import java.net.ServerSocket;
+import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.io.StringReader;
+import java.io.StringWriter;
 import java.net.Socket;
-import java.net.SocketException;
 import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Date;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+
+import org.example.monitor.MonitorEndpoints;
+import org.example.monitor.PerformanceMonitor;
+import org.example.security.DosDefender;
 
 public class HarmarHttpServer {
     // monitor fields
@@ -30,8 +32,7 @@ public class HarmarHttpServer {
     private final FileCacheManager fileCache;
     private final DosDefender dosDefender;
     private final Router router = new Router();
-    private final ConnectionManager connectionManager =
-            new ConnectionManager(this, port, 8);
+    private final ConnectionManager connectionManager;
 
     public HarmarHttpServer(int port, String rootDir) throws IOException {
         this(port, rootDir,true, true);
@@ -41,11 +42,13 @@ public class HarmarHttpServer {
         this.port = port;
         this.rootDir = rootDir;
         // config 100 file and 100M limit
-        this.fileCache = new FileCacheManager(100,10 * 1024 * 1024);
+        this.fileCache = new FileCacheManager(100,10 * 1024 * 1024,
+                Paths.get("src/main/resources/example"));
 
         this.dosDefender = enableDosDefender ?
                 new DosDefender(60_000, 100, 300_000) : null;
 
+        connectionManager = new ConnectionManager(this, port, 8);
         // init monitor
         this.enableMonitoring = enableMonitoring;
         if (enableMonitoring) {

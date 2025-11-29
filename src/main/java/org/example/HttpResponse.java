@@ -62,7 +62,7 @@ public class HttpResponse {
 
     public void setDefaultheaders() {
         setHeader("Date", getHttpDate());
-        setHeader("Server", "HemarHttpServer");
+        setHeader("Server", "HarmarHttpServer");
         setHeader("X-Content-Type-Options", "nosniff");
 
         setConnection("close");

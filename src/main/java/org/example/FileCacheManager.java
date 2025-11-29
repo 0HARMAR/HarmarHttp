@@ -1,9 +1,7 @@
 package org.example;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.nio.file.*;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -14,8 +12,14 @@ public class FileCacheManager {
     private final Map<String,CacheEntity> cache;
     private long currentSize;
 
-    public FileCacheManager(long maxSizeBytes,int maxEntries) {
+    private final WatchService watchService;
+    private final Thread watchThread;
+    private final Path watchRoot;
+
+    public FileCacheManager(long maxSizeBytes,int maxEntries, Path watchRoot) throws IOException{
         this.maxSizeBytes = maxSizeBytes;
+        this.watchRoot = watchRoot;
+
         this.cache = Collections.synchronizedMap(
                 new LinkedHashMap<String,CacheEntity>(maxEntries,0.75f,true) {
                     @Override
@@ -26,6 +30,45 @@ public class FileCacheManager {
                     }
                 }
         );
+
+        // init file listener
+        this.watchService = FileSystems.getDefault().newWatchService();
+        watchRoot.register(
+                watchService,
+                StandardWatchEventKinds.ENTRY_MODIFY,
+                StandardWatchEventKinds.ENTRY_DELETE
+        );
+
+        this.watchThread = new Thread(this::watchLoop, "FileCacheWatcher");
+        watchThread.setDaemon(true);
+        watchThread.start();
+    }
+
+    private void watchLoop() {
+        try {
+            while(true) {
+                WatchKey key = watchService.take();
+
+                for (WatchEvent<?> event : key.pollEvents()) {
+
+                    Path changed = ( (Path) event.context());
+                    Path fullPath = watchRoot.resolve(changed);
+                    String filePath = fullPath.toString();
+
+                    synchronized (this) {
+                        CacheEntity old = cache.remove(filePath);
+                        if (old != null) {
+                            currentSize -= old.content.length;
+                            System.out.println("[Cache] hot load failed: " + filePath);
+                        }
+                    }
+                }
+                key.reset();
+            }
+        } catch (InterruptedException ignored) {
+        }
+        catch (ClosedWatchServiceException ignored) {
+        }
     }
 
     public CacheEntity get(String filePath) {
