@@ -42,8 +42,7 @@ public class HarmarHttpServer {
         this.port = port;
         this.rootDir = rootDir;
         // config 100 file and 100M limit
-        this.fileCache = new FileCacheManager(100,10 * 1024 * 1024,
-                Paths.get("src/main/resources/example"));
+        this.fileCache = new FileCacheManager(100,Paths.get("src/main/resources/example"));
 
         this.dosDefender = enableDosDefender ?
                 new DosDefender(60_000, 100, 300_000) : null;
@@ -272,8 +271,9 @@ public class HarmarHttpServer {
             long lastModified = Files.getLastModifiedTime(requestPath).toMillis();
 
             // update cache
+            String canonicalPath = requestPath.toRealPath().toString();
             fileCache.put(fileKey,
-                    new FileCacheManager.CacheEntity(content,contentType,lastModified));
+                    new FileCacheManager.CacheEntity(content,contentType,lastModified, canonicalPath));
             sendResponse(output, HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message, contentType, content);
         } else {
             sendResponse(output, HttpResponse.HttpStatus.NOT_FOUND.code, HttpResponse.HttpStatus.NOT_FOUND.message,
