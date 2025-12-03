@@ -370,19 +370,18 @@ public class HarmarHttpServer {
                         "</html>").getBytes();
     }
 
-    public void handleRawRequest(AsynchronousSocketChannel channel, String rawRequest) {
+    public byte[] handleRawRequest(String rawRequest) {
         try {
             BufferedReader reader = new BufferedReader(new StringReader(rawRequest));
             HttpRequest request = parseRequest(reader);
             StringWriter sw = new StringWriter();
             ByteArrayOutputStream responseStream = new ByteArrayOutputStream();
             respondToRequest(responseStream, request, null);
-            byte[] response = responseStream.toByteArray();
+            return responseStream.toByteArray();
 
-            connectionManager.writeResponse(channel, response);
         } catch (Exception e) {
             e.printStackTrace();
-            connectionManager.writeResponse(channel, "HTTP/1.1 500 Internal Server Error\r\n\r\n" + e.getMessage());
+            return ("HTTP/1.1 500 Internal Server Error\\r\\n\\r\\n" + e.getMessage()).getBytes();
         }
     }
 }
