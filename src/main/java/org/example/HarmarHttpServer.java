@@ -62,16 +62,16 @@ public class HarmarHttpServer {
     }
 
     private void registerBuildInRoutes() {
-        router.get("/api/time", ((request, output, pathParams) ->
-                sendResponse(output, HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message, "application/json",
+        router.get("/api/time", ((request, response, pathParams) ->
+                sendResponse(response.getByteArrayOutputStream(), HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message, "application/json",
                         ("{ \"serverTime\": \"" + new Date() + "\" }".getBytes()).getBytes())));
 
-        router.get("/api/user/{id}", (request, output, pathParams) -> {
+        router.get("/api/user/{id}", (request, response, pathParams) -> {
             String userId = pathParams.get("id");
             String json = "{ \"userId\": \"" + userId + "\", \"name\": \"User" + userId + "\" }";
 
             sendResponse(
-                    output,
+                    response.getByteArrayOutputStream(),
                     HttpResponse.HttpStatus.OK.code,
                     HttpResponse.HttpStatus.OK.message,
                     "application/json",
@@ -81,9 +81,9 @@ public class HarmarHttpServer {
 
 
 
-        router.post("api/data", ((request, output, pathParams) -> {
+        router.post("api/data", ((request, response, pathParams) -> {
             // TODO
-            sendResponse(output, HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message,
+            sendResponse(response.getByteArrayOutputStream(), HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message,
                     "application/json", "{ \"status\": \"OK\" }".getBytes());
         }));
 
@@ -210,12 +210,13 @@ public class HarmarHttpServer {
         return request;
     }
 
-    private void respondToRequest(OutputStream output, HttpRequest request, BufferedReader reader) throws IOException {
+    private Response respondToRequest(OutputStream output, HttpRequest request, BufferedReader reader) throws IOException {
         // 1. try to match route
         Router.RouteMatch match = router.findMatch(request.method, request.path);
+        Response response = new Response(output, false);
         if (match != null) {
-            match.handler.handle(request, output, match.pathParams);
-            return;
+            match.handler.handle(request, response, match.pathParams);
+            return response;
         }
 
         // 2. if no route,execute default
@@ -232,6 +233,8 @@ public class HarmarHttpServer {
             sendResponse(output, HttpResponse.HttpStatus.NOT_IMPLEMENTED.code, HttpResponse.HttpStatus.NOT_IMPLEMENTED.message,
                     "text/html", ("Not Implemented" + request.method).getBytes());
         }
+
+        return response;
     }
 
     private void handleGetRequest(OutputStream output, String path) throws IOException {
@@ -339,6 +342,17 @@ public class HarmarHttpServer {
         response.send(output);
     }
 
+    public static void sendResponse(OutputStream output, int statusCode, String statusMsg) throws IOException {
+        HttpResponse response = new HttpResponse(statusCode);
+        response.setStatusMessage(statusMsg);
+
+        response.setDefaultheaders();
+        response.setHeader("Cache-Control", "no-cache");
+        response.setHeader("Transfer-Encoding", "chunked");
+
+        response.send(output);
+    }
+
     public static void sendHEADResponse(OutputStream output, int statusCode, String statusMsg, String contentType, String contentLength) throws IOException {
         HttpResponse response = new HttpResponse(statusCode);
         response.setStatusMessage(statusMsg);
@@ -370,18 +384,17 @@ public class HarmarHttpServer {
                         "</html>").getBytes();
     }
 
-    public byte[] handleRawRequest(String rawRequest) {
+    public Response handleRawRequest(String rawRequest) {
         try {
             BufferedReader reader = new BufferedReader(new StringReader(rawRequest));
             HttpRequest request = parseRequest(reader);
             StringWriter sw = new StringWriter();
             ByteArrayOutputStream responseStream = new ByteArrayOutputStream();
-            respondToRequest(responseStream, request, null);
-            return responseStream.toByteArray();
-
+            Response response = respondToRequest(responseStream, request, null);;
+            return response;
         } catch (Exception e) {
             e.printStackTrace();
-            return ("HTTP/1.1 500 Internal Server Error\\r\\n\\r\\n" + e.getMessage()).getBytes();
+            return null;
         }
     }
 }

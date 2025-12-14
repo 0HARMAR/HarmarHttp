@@ -1,6 +1,8 @@
 package org.example;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.AsynchronousServerSocketChannel;
@@ -8,6 +10,7 @@ import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.channels.CompletionHandler;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 
 public class ConnectionManager {
@@ -68,11 +71,18 @@ public class ConnectionManager {
                 String requestText = new String(data);
 
                 // async process request
-                workerPool.submit(() -> {
-                    boolean shouldKeepAlive = shouldKeepAlive(requestText);
-                    byte[] response = server.handleRawRequest(requestText);
-                    writeResponse(client, response, shouldKeepAlive, buffer);
-                });
+                    workerPool.submit(() -> {
+                        boolean shouldKeepAlive = shouldKeepAlive(requestText);
+                        Response response = server.handleRawRequest(requestText);
+                        if (response.getChunkedTransfer())
+                        {
+                            writeResponse(client, response, shouldKeepAlive, buffer);
+                        }
+                        else {
+                            byte[] responseData = response.getByteArrayOutputStream().toByteArray();
+                            writeResponse(client, responseData, shouldKeepAlive, buffer);
+                        }
+                    });
             }
 
             @Override
@@ -83,7 +93,81 @@ public class ConnectionManager {
         });
     }
 
-    public void writeResponse(AsynchronousSocketChannel client, byte[] data, boolean shouldKeepAlive, ByteBuffer buffer) {
+    public void writeResponse(AsynchronousSocketChannel client,
+                              Response response,
+                              boolean shouldKeepAlive,
+                              ByteBuffer buffer) {
+        ByteBuffer headerBuf = ByteBuffer.wrap(response.getResponseLineAndHeader());
+
+        client.write(headerBuf, headerBuf, new CompletionHandler<>() {
+            @Override
+            public void completed(Integer result, ByteBuffer buf) {
+                if (buf.hasRemaining()) {
+                    client.write(buf, buf, this);
+                } else {
+                    // ✅ header write completely, write chunks
+                    writeNextChunk(client, response, shouldKeepAlive, buffer);
+                }
+            }
+
+            @Override
+            public void failed(Throwable exc, ByteBuffer buf) {
+                System.err.println("❌ Header write failed: " + exc.getMessage());
+                close(client);
+            }
+        });
+    }
+
+    public void writeNextChunk(AsynchronousSocketChannel client,
+                              Response response,
+                              boolean shouldKeepAlive,
+                              ByteBuffer buffer) {
+        // write chunks
+        ByteBuffer nextChunk = response.poll();
+
+        if (nextChunk == null) {
+            if (!response.isEnd()) {
+                client.write(ByteBuffer.allocate(0), null, new CompletionHandler<Integer, Object>() {
+                    @Override
+                    public void completed(Integer result, Object attachment) {
+                        writeNextChunk(client, response, shouldKeepAlive, buffer);
+                    }
+
+                    @Override
+                    public void failed(Throwable exc, Object attachment) {
+                        close(client);
+                    }
+                });
+                return;
+            }
+
+            finishOrKeepAlive(client, shouldKeepAlive, buffer);
+            return;
+        }
+
+        client.write(nextChunk, nextChunk, new CompletionHandler<Integer, ByteBuffer>() {
+
+            @Override
+            public void completed(Integer result, ByteBuffer attachment) {
+                if (attachment.hasRemaining()) {
+                    client.write(attachment, attachment, this);
+                } else {
+                    writeNextChunk(client, response, shouldKeepAlive, buffer);
+                }
+            }
+
+            @Override
+            public void failed(Throwable exc, ByteBuffer attachment) {
+                System.err.println("❌ Write failed: " + exc.getMessage());
+                close(client);
+            }
+        });
+    }
+
+    public void writeResponse(AsynchronousSocketChannel client,
+                              byte[] data,
+                              boolean shouldKeepAlive,
+                              ByteBuffer buffer) {
         ByteBuffer responseBuffer = ByteBuffer.wrap(data);
 
         client.write(responseBuffer, responseBuffer, new CompletionHandler<Integer, ByteBuffer>() {
@@ -107,6 +191,15 @@ public class ConnectionManager {
                 close(client);
             }
         });
+    }
+
+    private void finishOrKeepAlive(AsynchronousSocketChannel client, boolean shouldKeepAlive, ByteBuffer buffer) {
+        if (shouldKeepAlive) {
+            buffer.clear();
+            readNextRequest(client, ByteBuffer.allocate(8192));
+        } else {
+            close(client);
+        }
     }
 
 
@@ -165,3 +258,4 @@ public class ConnectionManager {
         }
     }
 }
+

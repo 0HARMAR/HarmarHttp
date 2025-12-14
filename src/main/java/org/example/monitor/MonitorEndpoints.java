@@ -14,7 +14,7 @@ public class MonitorEndpoints {
 
     public void registerEndPoints(HarmarHttpServer server) {
         // health check point
-        server.registerRoute("GET", "/health", ((request, output, pathParams) -> {
+        server.registerRoute("GET", "/health", ((request, response, pathParams) -> {
             MonitorData data = monitor.getMonitorData();
             boolean isHealthy = data.getErrorRate() < 5.0 && data.currentConnections < 100;
 
@@ -25,31 +25,31 @@ public class MonitorEndpoints {
                     data.currentConnections
             );
 
-            server.sendResponse(output, isHealthy ? HttpResponse.HttpStatus.OK.code
+            server.sendResponse(response.getByteArrayOutputStream(), isHealthy ? HttpResponse.HttpStatus.OK.code
                     : HttpResponse.HttpStatus.SERVICE_UNAVAILABLE.code, isHealthy ?
                     HttpResponse.HttpStatus.OK.message : HttpResponse.HttpStatus.SERVICE_UNAVAILABLE.message,
                     "application/json",json.getBytes(StandardCharsets.UTF_8) );
         }));
 
         // performance index
-        server.registerRoute("GET", "/metrics", ((request, output, pathParams) -> {
+        server.registerRoute("GET", "/metrics", ((request, response, pathParams) -> {
             MonitorData data = monitor.getMonitorData();
-            server.sendResponse(output, HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message,
+            server.sendResponse(response.getByteArrayOutputStream(), HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message,
                     "application/json", data.toJson().getBytes(StandardCharsets.UTF_8));
         }));
 
         // simple count index
-        server.registerRoute("GET", "/stats", ((request, output, pathParams) -> {
+        server.registerRoute("GET", "/stats", ((request, response, pathParams) -> {
             MonitorData data = monitor.getMonitorData();
             String html = generateStatsHtml(data);
-            server.sendResponse(output, HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message,
+            server.sendResponse(response.getByteArrayOutputStream(), HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message,
                     "text/html", html.getBytes(StandardCharsets.UTF_8) );
         }));
 
         // reset count index
-        server.registerRoute("POST", "/reset", ((request, output, pathParams) -> {
+        server.registerRoute("POST", "/reset", ((request, response, pathParams) -> {
             monitor.reset();
-            server.sendResponse(output, HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message,
+            server.sendResponse(response.getByteArrayOutputStream(), HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message,
                     "application/json", "{\"message\":\"Statistics reset successfully\"}".getBytes(StandardCharsets.UTF_8));
         }));
     }
