@@ -10,6 +10,7 @@ import java.io.StringReader;
 import java.io.StringWriter;
 import java.net.Socket;
 import java.nio.channels.AsynchronousSocketChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -47,7 +48,6 @@ public class HarmarHttpServer {
         this.dosDefender = enableDosDefender ?
                 new DosDefender(60_000, 100, 300_000) : null;
 
-        connectionManager = new ConnectionManager(this, port, 8);
         // init monitor
         this.enableMonitoring = enableMonitoring;
         if (enableMonitoring) {
@@ -58,34 +58,51 @@ public class HarmarHttpServer {
             this.monitorEndpoints = null;
         }
 
+        this.connectionManager = new ConnectionManager(this, port, 10,
+                enableDosDefender ? performanceMonitor : null,
+                enableDosDefender ? dosDefender : null);
+
         registerBuildInRoutes();
     }
 
     private void registerBuildInRoutes() {
-        router.get("/api/time", ((request, response, pathParams) ->
-                sendResponse(response.getByteArrayOutputStream(), HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message, "application/json",
-                        ("{ \"serverTime\": \"" + new Date() + "\" }".getBytes()).getBytes())));
+        router.get("/api/time", (request, response, pathParams) -> {
+            byte[] content = ("{ \"serverTime\": \"" + new Date() + "\" }")
+                    .getBytes(StandardCharsets.UTF_8);
 
-        router.get("/api/user/{id}", (request, response, pathParams) -> {
-            String userId = pathParams.get("id");
-            String json = "{ \"userId\": \"" + userId + "\", \"name\": \"User" + userId + "\" }";
+            ResponseBody body = new ResponseBody();
+            body.addChunk(content);
+            body.end();
 
-            sendResponse(
-                    response.getByteArrayOutputStream(),
-                    HttpResponse.HttpStatus.OK.code,
-                    HttpResponse.HttpStatus.OK.message,
-                    "application/json",
-                    json.getBytes()
-            );
+            response.setStatus(HttpStatus.OK);
+            response.setBody(body);
+            response.setDefaultHeaders();
+            response.setHeader("Content-Type", "application/json");
+            response.setHeader("Content-Length", String.valueOf(content.length));
+
+            response.send();
         });
 
 
+        router.get("/api/user/{id}", (request, response, pathParams) -> {
+            String userId = pathParams.get("id");
+            byte[] content = (
+                    "{ \"userId\": \"" + userId + "\", \"name\": \"User" + userId + "\" }"
+            ).getBytes(StandardCharsets.UTF_8);
 
-        router.post("api/data", ((request, response, pathParams) -> {
-            // TODO
-            sendResponse(response.getByteArrayOutputStream(), HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message,
-                    "application/json", "{ \"status\": \"OK\" }".getBytes());
-        }));
+            ResponseBody body = new ResponseBody();
+            body.addChunk(content);
+            body.end();
+
+            response.setStatus(HttpStatus.OK);
+            response.setBody(body);
+            response.setDefaultHeaders();
+            response.setHeader("Content-Type", "application/json");
+            response.setHeader("Content-Length", String.valueOf(content.length));
+
+            response.send();
+        });
+
 
         // register monitor endpoint
         if (enableMonitoring && monitorEndpoints != null) {
@@ -131,66 +148,6 @@ public class HarmarHttpServer {
         }
     }
 
-    private void handleRequest(Socket socket) {
-        long startTime = System.currentTimeMillis();
-        HttpRequest request = null;
-
-        try (
-                InputStream input = socket.getInputStream();
-                OutputStream output = socket.getOutputStream();
-        ) {
-            String clientIp = socket.getInetAddress().getHostAddress();
-
-            // record request start
-            if (enableMonitoring && performanceMonitor != null) {
-                performanceMonitor.recordRequestStart();
-            }
-
-            // check dos defender
-            if (dosDefender != null && !dosDefender.allowRequest(clientIp)) {
-                sendResponse(output, HttpResponse.HttpStatus.TOO_MANY_REQUESTS.code,
-                        HttpResponse.HttpStatus.TOO_MANY_REQUESTS.message, "text/html; charset=utf8", "You have exceeded the request limit".getBytes());
-                return;
-            }
-            // get request
-            BufferedReader reader = new BufferedReader(new InputStreamReader(input));
-            request = parseRequest(reader);
-
-            // TODO
-            if (request != null) {
-                respondToRequest(output,request, reader);
-            }
-
-            // record request complete
-            if (enableMonitoring && performanceMonitor != null) {
-                long responseTime = System.currentTimeMillis() - startTime;
-                // example status code is 200
-                performanceMonitor.recordRequestComplete(responseTime, 200);
-            }
-        } catch (IOException e) {
-            if (isRunning) {
-                System.err.println("Request processing error: " + e.getMessage());
-            }
-
-            // record error
-            if (enableMonitoring && performanceMonitor != null) {
-                performanceMonitor.recordError(e.getClass().getSimpleName());
-            }
-        } finally {
-            closeSocketQuietly(socket);
-        }
-    }
-
-    private void closeSocketQuietly(Socket socket) {
-        try {
-            if (socket != null && !socket.isClosed()) {
-                socket.close();
-            }
-        } catch (IOException e) {
-            System.err.println("Error closing server socket: " + e.getMessage());
-        }
-    }
-
     private HttpRequest parseRequest(BufferedReader reader) throws IOException {
         String requestLine = reader.readLine();
         if (requestLine == null || requestLine.isEmpty()) {return null;}
@@ -207,53 +164,76 @@ public class HarmarHttpServer {
         if ("POST".equalsIgnoreCase(request.method)) {
             request.hasBody = true;
         }
+
+        // TODO parse request body
         return request;
     }
 
-    private Response respondToRequest(OutputStream output, HttpRequest request, BufferedReader reader) throws IOException {
-        // 1. try to match route
+    private HttpResponse respondToRequest(HttpRequest request) throws IOException {
+        // 1. check http version
+        HttpVersion version = request.protocol.startsWith("HTTP/1.1") ? HttpVersion.HTTP_1_1 : HttpVersion.HTTP_1_0;
+        // 2. try to match route
         Router.RouteMatch match = router.findMatch(request.method, request.path);
-        Response response = new Response(output, false);
+        HttpResponse response = new HttpResponse();
+        response.setHttpVersion(version);
         if (match != null) {
             match.handler.handle(request, response, match.pathParams);
             return response;
         }
 
-        // 2. if no route,execute default
+        // 3. if no route,execute default
         if ("GET".equalsIgnoreCase(request.method)) {
-            handleGetRequest(output,request.path);
-        } else if("POST".equalsIgnoreCase(request.method)) {
-            PostRequestHandler postRequestHandler = new PostRequestHandler();
-            postRequestHandler.handle(output, request, reader);
-        } else if ("HEAD".equalsIgnoreCase(request.method)) {
-            HeadRequestHandler headRequestHandler = new HeadRequestHandler();
-            headRequestHandler.handle(output, request);
+            handleGetRequest(response,request.path);
         }
         else  {
-            sendResponse(output, HttpResponse.HttpStatus.NOT_IMPLEMENTED.code, HttpResponse.HttpStatus.NOT_IMPLEMENTED.message,
-                    "text/html", ("Not Implemented" + request.method).getBytes());
+            byte[] content = ("Not Implemented " + request.method)
+                    .getBytes(StandardCharsets.UTF_8);
+
+            ResponseBody body = new ResponseBody();
+            body.addChunk(content);
+            body.end();
+
+            response.setStatus(HttpStatus.NOT_IMPLEMENTED);
+            response.setBody(body);
+
+            response.setDefaultHeaders();
+            response.setHeader("Content-Type", "text/html");
+            response.setHeader("Content-Length", String.valueOf(content.length));
+
+            response.send();
         }
 
         return response;
     }
 
-    private void handleGetRequest(OutputStream output, String path) throws IOException {
+    private void handleGetRequest(HttpResponse response, String path) throws IOException {
         if ("/".equals(path)) {
             path = "index.html";
         }
 
         // handle static file request
-        serverStaticFile(output,path);
+        serverStaticFile(response,path);
     }
 
-    private void serverStaticFile(OutputStream output, String path) throws IOException {
+    private void serverStaticFile(HttpResponse response, String path) throws IOException {
         Path rootPath = Paths.get(this.rootDir).toAbsolutePath();
         Path requestPath = normalizePath(rootPath,path);
 
         // security auth
         if (!requestPath.startsWith(rootPath)) {
-            sendResponse(output, HttpResponse.HttpStatus.FORBIDDEN.code, HttpResponse.HttpStatus.FORBIDDEN.message,
-                    "text/html; charset=utf8", "403 FORBIDDEN".getBytes());
+            response.setStatus(HttpStatus.FORBIDDEN);
+
+            ResponseBody body = new ResponseBody();
+            byte[] content = "403 FORBIDDEN".getBytes();
+            body.addChunk(content);
+            body.end();
+            response.setBody(body);
+
+            response.setDefaultHeaders();
+            response.setHeader("Content-Type", "text/html; charset=utf8");
+            response.setHeader("Content-Length", String.valueOf(content.length));
+
+            response.send();
             return;
         }
 
@@ -263,8 +243,18 @@ public class HarmarHttpServer {
             // check cache
             FileCacheManager.CacheEntity cached = fileCache.get(fileKey);
             if (cached != null) {
-                sendResponse(output, HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message,
-                        cached.contentType, cached.content);
+                response.setStatus(HttpStatus.OK);
+
+                ResponseBody body = new ResponseBody();
+                body.addChunk(cached.content);
+                body.end();
+                response.setBody(body);
+
+                response.setDefaultHeaders();
+                response.setHeader("Content-Type", cached.contentType);
+                response.setHeader("Content-Length", String.valueOf(cached.content.length));
+
+                response.send();
                 return;
             }
 
@@ -277,10 +267,27 @@ public class HarmarHttpServer {
             String canonicalPath = requestPath.toRealPath().toString();
             fileCache.put(fileKey,
                     new FileCacheManager.CacheEntity(content,contentType,lastModified, canonicalPath));
-            sendResponse(output, HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message, contentType, content);
+
+            ResponseBody body = new ResponseBody();
+            body.addChunk(content);
+            body.end();
+            response.setBody(body);
+            response.setStatus(HttpStatus.OK);
+            response.setDefaultHeaders();
+            response.setHeader("Content-Type", contentType);
+            response.setHeader("Content-Length", String.valueOf(content.length));
+            response.send();
         } else {
-            sendResponse(output, HttpResponse.HttpStatus.NOT_FOUND.code, HttpResponse.HttpStatus.NOT_FOUND.message,
-                    "text/html; charset=utf-8", buildErrorHtml(HttpResponse.HttpStatus.NOT_FOUND.code, HttpResponse.HttpStatus.NOT_FOUND.message));
+            byte[] errorContent = buildErrorHtml(HttpStatus.NOT_FOUND.code, HttpStatus.NOT_FOUND.message);
+            ResponseBody body = new ResponseBody();
+            body.addChunk(errorContent);
+            body.end();
+            response.setBody(body);
+            response.setStatus(HttpStatus.NOT_FOUND);
+            response.setDefaultHeaders();
+            response.setHeader("Content-Type", "text/html; charset=utf-8");
+            response.setHeader("Content-Length", String.valueOf(errorContent.length));
+            response.send();
         }
     }
 
@@ -315,56 +322,6 @@ public class HarmarHttpServer {
         }
     }
 
-    public static void sendResponse(OutputStream output, int statusCode, String statusMsg,
-                                    String contentType, byte[] content, Map<String, String> headers) throws IOException {
-        HttpResponse response = new HttpResponse(statusCode);
-        response.setStatusMessage(statusMsg);
-
-        response.setDefaultheaders();
-        response.setHeader("Cache-Control", "no-cache");
-        response.setContent(content, contentType);
-
-        // add extra headers
-        if (headers != null) {
-            headers.forEach(response::setHeader);
-        }
-
-        response.send(output);
-    }
-    public static void sendResponse(OutputStream output, int statusCode, String statusMsg, String contentType, byte[] content) throws IOException {
-        HttpResponse response = new HttpResponse(statusCode);
-        response.setStatusMessage(statusMsg);
-
-        response.setDefaultheaders();
-        response.setHeader("Cache-Control", "no-cache");
-        response.setContent(content, contentType);
-
-        response.send(output);
-    }
-
-    public static void sendResponse(OutputStream output, int statusCode, String statusMsg) throws IOException {
-        HttpResponse response = new HttpResponse(statusCode);
-        response.setStatusMessage(statusMsg);
-
-        response.setDefaultheaders();
-        response.setHeader("Cache-Control", "no-cache");
-        response.setHeader("Transfer-Encoding", "chunked");
-
-        response.send(output);
-    }
-
-    public static void sendHEADResponse(OutputStream output, int statusCode, String statusMsg, String contentType, String contentLength) throws IOException {
-        HttpResponse response = new HttpResponse(statusCode);
-        response.setStatusMessage(statusMsg);
-
-        response.setDefaultheaders();
-        response.setHeader("Cache-Control", "no-cache");
-        response.setHeader("Content-Type", contentType);
-        response.setHeader("Content-Length", String.valueOf(contentLength));
-
-        response.send(output);
-    }
-
     private byte[] buildErrorHtml(int statusCode, String statusMsg) {
         return ("<!DOCTYPE html>\n" +
                         "<html lang=\"en\">\n" +
@@ -384,13 +341,11 @@ public class HarmarHttpServer {
                         "</html>").getBytes();
     }
 
-    public Response handleRawRequest(String rawRequest) {
+    public HttpResponse handleRawRequest(String rawRequest) {
         try {
             BufferedReader reader = new BufferedReader(new StringReader(rawRequest));
             HttpRequest request = parseRequest(reader);
-            StringWriter sw = new StringWriter();
-            ByteArrayOutputStream responseStream = new ByteArrayOutputStream();
-            Response response = respondToRequest(responseStream, request, null);;
+            HttpResponse response = respondToRequest(request);;
             return response;
         } catch (Exception e) {
             e.printStackTrace();

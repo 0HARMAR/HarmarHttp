@@ -10,56 +10,51 @@ import static org.example.HttpHeaderParser.getContentType;
 public class PostRequestHandler {
     private static final int MAX_BODY_SIZE = 1024 * 1024;
 
-    public void handle(OutputStream output, HttpRequest request, BufferedReader reader) throws IOException {
+    public void handle(HttpResponse response, HttpRequest request) throws IOException {
         // check whether support file type
         if (!isContentTypeSupported(request)) {
-            HarmarHttpServer.sendResponse(output, HttpResponse.HttpStatus.MEDIA_TYPE_NOT_SUPPORTED.code,
-                    HttpResponse.HttpStatus.MEDIA_TYPE_NOT_SUPPORTED.message, "text/html; charset=utf8",
-                    "Only application/x-www-form-urlencoded and application/json are supported".getBytes());
+            byte[] content = "Only application/x-www-form-urlencoded and application/json are supported"
+                    .getBytes(StandardCharsets.UTF_8);
+
+            ResponseBody body = new ResponseBody();
+            body.addChunk(content);
+            body.end();
+
+            response.setStatus(HttpStatus.MEDIA_TYPE_NOT_SUPPORTED);
+            response.setBody(body);
+
+            response.setDefaultHeaders();
+            response.setHeader("Content-Type", "text/html; charset=utf8");
+            response.setHeader("Content-Length", String.valueOf(content.length));
+
+            response.send();
+
             return;
         }
 
         // get request body
-        char[] bodyChar = readRequestBody(reader, request);
-        String bodyStr = new String(bodyChar);
-        byte[] body = bodyStr.getBytes(StandardCharsets.UTF_8);
+        byte[] body = request.body;
 
         if (body == null) {
-            HarmarHttpServer.sendResponse(output, HttpResponse.HttpStatus.PAYLOAD_TOO_LARGE.code,
-                    HttpResponse.HttpStatus.PAYLOAD_TOO_LARGE.message, "text/html; charset=utf8",
-                    "Request body exceeds 1MB size limit".getBytes());
+            byte[] content = "Request body exceeds 1MB size limit"
+                    .getBytes(StandardCharsets.UTF_8);
+
+            ResponseBody responseBody = new ResponseBody();
+            responseBody.addChunk(content);
+            responseBody.end();
+
+            response.setStatus(HttpStatus.PAYLOAD_TOO_LARGE);
+            response.setBody(responseBody);
+
+            response.setDefaultHeaders();
+            response.setHeader("Content-Type", "text/html; charset=utf8");
+            response.setHeader("Content-Length", String.valueOf(content.length));
+
+            response.send();
+
             return;
         }
-
-        // according to path route process
-        if ("/api/echo".equals(request.path)) {
-            handleEcho(output, body, request);
-        } else if ("/api/login".equals(request.path)) {
-            handleLogin(output, body, request);
-        } else {
-            HarmarHttpServer.sendResponse(output, HttpResponse.HttpStatus.NOT_FOUND.code,
-                    HttpResponse.HttpStatus.NOT_MODIFIED.message, "text/html; charset=utf8",
-                    ("No Post Handler for path: " +  request.path).getBytes());
-        }
     }
-
-    private char[] readRequestBody(BufferedReader reader, HttpRequest request) throws IOException {
-        int contentLength = getContentLength(request.headers);
-        if (contentLength <= 0 || contentLength > MAX_BODY_SIZE) {
-            return null;
-        }
-
-        char[] buffer = new char[contentLength];
-        reader.read(buffer, 0, contentLength);
-
-        System.out.println("buffer: ");
-        for (int i = 0; i < contentLength; i++) {
-            System.out.print(buffer[i]);
-        }
-
-        return buffer;
-    }
-
 
     private boolean isContentTypeSupported(HttpRequest request) {
         String contentType = getContentType(request.headers);
@@ -67,18 +62,4 @@ public class PostRequestHandler {
                 "application/json".equals(contentType);
     }
 
-    private void handleEcho(OutputStream output, byte[] body, HttpRequest request) throws IOException {
-        String contentType = getContentType(request.headers);
-
-    }
-
-    private void handleLogin(OutputStream output, byte[] body, HttpRequest request) throws IOException {
-        String requestBody = new String (body, StandardCharsets.UTF_8);
-
-        String response = String.format("{\"status\":\"success\",\"message\":\"Login processed: %s\"",
-                requestBody.replace("\"", "\\\""));
-
-        HarmarHttpServer.sendResponse(output, HttpResponse.HttpStatus.OK.code,
-                HttpResponse.HttpStatus.OK.message, "application/json", response.getBytes());
-    }
 }

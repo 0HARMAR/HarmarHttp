@@ -2,6 +2,8 @@ package org.example.monitor;
 
 import org.example.HarmarHttpServer;
 import org.example.HttpResponse;
+import org.example.HttpStatus;
+import org.example.ResponseBody;
 
 import java.nio.charset.StandardCharsets;
 
@@ -25,32 +27,71 @@ public class MonitorEndpoints {
                     data.currentConnections
             );
 
-            server.sendResponse(response.getByteArrayOutputStream(), isHealthy ? HttpResponse.HttpStatus.OK.code
-                    : HttpResponse.HttpStatus.SERVICE_UNAVAILABLE.code, isHealthy ?
-                    HttpResponse.HttpStatus.OK.message : HttpResponse.HttpStatus.SERVICE_UNAVAILABLE.message,
-                    "application/json",json.getBytes(StandardCharsets.UTF_8) );
+            response.setStatus(isHealthy ?  HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE);
+            response.setDefaultHeaders();
+            response.setHeader( "Content-Type", "application/json");
+            response.setHeader("Content-Length", String.valueOf(json.length()));
+
+            ResponseBody body = new ResponseBody();
+            body.addChunk(json.getBytes(StandardCharsets.UTF_8));
+            body.end();
+            response.setBody(body);
         }));
 
         // performance index
         server.registerRoute("GET", "/metrics", ((request, response, pathParams) -> {
             MonitorData data = monitor.getMonitorData();
-            server.sendResponse(response.getByteArrayOutputStream(), HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message,
-                    "application/json", data.toJson().getBytes(StandardCharsets.UTF_8));
+            response.setStatus(HttpStatus.OK);
+            response.setDefaultHeaders();
+            response.setHeader( "Content-Type", "application/json");
+            response.setHeader( "Content-Length", String.valueOf(data.toJson().length()));
+
+            ResponseBody  body = new ResponseBody();
+            body.addChunk(data.toJson().getBytes(StandardCharsets.UTF_8));
+            body.end();
+            response.setBody(body);
         }));
 
         // simple count index
         server.registerRoute("GET", "/stats", ((request, response, pathParams) -> {
             MonitorData data = monitor.getMonitorData();
             String html = generateStatsHtml(data);
-            server.sendResponse(response.getByteArrayOutputStream(), HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message,
-                    "text/html", html.getBytes(StandardCharsets.UTF_8) );
+
+            response.setStatus(HttpStatus.OK);
+            response.setDefaultHeaders();
+            response.setHeader("Content-Type", "text/html; charset=UTF-8");
+            response.setHeader(
+                    "Content-Length",
+                    String.valueOf(html.getBytes(StandardCharsets.UTF_8).length)
+            );
+
+            ResponseBody body = new ResponseBody();
+            body.addChunk(html.getBytes(StandardCharsets.UTF_8));
+            body.end();
+
+            response.setBody(body);
+
         }));
 
         // reset count index
         server.registerRoute("POST", "/reset", ((request, response, pathParams) -> {
             monitor.reset();
-            server.sendResponse(response.getByteArrayOutputStream(), HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message,
-                    "application/json", "{\"message\":\"Statistics reset successfully\"}".getBytes(StandardCharsets.UTF_8));
+            String json = "{\"message\":\"Statistics reset successfully\"}";
+
+            response.setStatus(HttpStatus.OK);
+            response.setDefaultHeaders();
+            response.setHeader("Content-Type", "application/json; charset=UTF-8");
+            response.setHeader(
+                    "Content-Length",
+                    String.valueOf(json.getBytes(StandardCharsets.UTF_8).length)
+            );
+
+            ResponseBody body = new ResponseBody();
+            body.addChunk(json.getBytes(StandardCharsets.UTF_8));
+            body.end();
+
+            response.setBody(body);
+
         }));
     }
 

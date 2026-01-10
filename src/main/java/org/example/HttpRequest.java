@@ -12,4 +12,5 @@ public class  HttpRequest {
     String protocol;
     Map<String, String> headers = new LinkedHashMap<>();
     boolean hasBody;
+    byte[] body;
 }

@@ -19,9 +19,9 @@ public class HeadRequestHandler {
         // content type is empty mean no res
         boolean exists = !validateResExist(path).isEmpty();
         String contentType = validateResExist(path).get(0);
-        if (exists)
-        HarmarHttpServer.sendHEADResponse(output, HttpResponse.HttpStatus.OK.code, HttpResponse.HttpStatus.OK.message,
-                contentType, validateResExist(path).get(1));
+        if (exists) {
+
+        }
     }
 
     // return content type and content length

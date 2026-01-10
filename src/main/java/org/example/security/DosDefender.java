@@ -30,9 +30,9 @@ public class DosDefender {
         this.maxRequestPerWindow = maxRequestPerWindow;
         this.ipExpirationMillis = ipExpirationMillis;
 
-        // start regular clean tast
+        // start regular clean test
         cleaner.scheduleAtFixedRate(this::cleanupExpiredIps,
-                CLEANER_INTERVAL,CLEANER_INTERVAL, TimeUnit.MICROSECONDS);
+                CLEANER_INTERVAL,CLEANER_INTERVAL, TimeUnit.MILLISECONDS);
     }
 
     /**

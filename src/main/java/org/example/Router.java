@@ -15,7 +15,7 @@ public class Router {
 
     // route handle function interface
     public interface RouteHandler {
-        void handle(HttpRequest request, Response output, Map<String,String> pathParams) throws IOException;
+        void handle(HttpRequest request, HttpResponse response, Map<String,String> pathParams) throws IOException;
     }
 
     // route entry
