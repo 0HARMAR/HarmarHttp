@@ -1,5 +1,6 @@
 package org.example;
 
+import org.example.http2.Http2ConnectionManager;
 import org.example.monitor.PerformanceMonitor;
 import org.example.monitor.RequestMonitorContext;
 import org.example.security.DosDefender;
@@ -38,6 +39,7 @@ public class ConnectionManager {
 
     public void start() {
         System.out.println("⚡ [ConnectionManager] Listening on port " + getPort());
+
         acceptNext();
     }
 
@@ -61,14 +63,12 @@ public class ConnectionManager {
     private void handleClient(AsynchronousSocketChannel client) {
         System.out.println("⚡ [ConnectionManager] New connection from " + getRemoteAddress(client));
         performanceMonitor.recordRequestStart();
+
         ByteBuffer buffer = ByteBuffer.allocate(8192);
 
-        readNextRequest(client, buffer);
-    }
-
-    private void readNextRequest(AsynchronousSocketChannel client, ByteBuffer buffer) {
-        RequestMonitorContext context = new RequestMonitorContext();
         client.read(buffer, buffer, new CompletionHandler<Integer, ByteBuffer>() {
+
+            private Protocol protocol = null;
 
             @Override
             public void completed(Integer bytesRead, ByteBuffer buf) {
@@ -78,38 +78,31 @@ public class ConnectionManager {
                 }
 
                 buf.flip();
-                byte[] data = new byte[buf.remaining()];
-                buf.get(data);
-                String requestText = new String(data);
 
-                // ====== ✅ DosDefender 防御点 ======
-                if (dosDefender != null) {
-                    String ip = getClientIp(client);
-                    if (!dosDefender.allowRequest(ip)) {
-                        // ❌ 超限，直接返回 429
-                        HttpResponse response = new HttpResponse();
-                        response.setHttpVersion(justifyHttpVersion(requestText));
-                        response.setStatus(HttpStatus.TOO_MANY_REQUESTS);
-                        ResponseBody body = new ResponseBody();
-                        body.addChunk("Too Many Requests".getBytes());
-                        body.end();
-                        response.setBody(body);
+                // 1️⃣ 协议探测阶段
+                if (protocol == null) {
+                    protocol = ProtocolDetector.detect(buf);
 
-                        response.setDefaultHeaders();
-                        response.setHeader("Content-Type", "text/plain");
-                        response.setHeader("Content-Length", String.valueOf("Too Many Requests".getBytes().length));
-                        writeResponse(client, response, false, buffer, context);
+                    if (protocol == null) {
+                        buf.compact();
+                        client.read(buf, buf, this);
                         return;
                     }
-                }
-                // ==================================
 
-                // async process request
-                    workerPool.submit(() -> {
-                        boolean shouldKeepAlive = shouldKeepAlive(requestText);
-                        HttpResponse response = server.handleRawRequest(requestText);
-                        writeResponse(client, response, shouldKeepAlive, buffer, context);
-                    });
+                    if (protocol == Protocol.HTTP2) {
+                        System.out.println("⚡ Detected HTTP/2 connection");
+                        Http2ConnectionManager http2 =
+                                new Http2ConnectionManager(client);
+                        http2.start();
+                        return; // HTTP/2 接管
+                    }
+
+                    System.out.println("⚡ Detected HTTP/1.x connection");
+                    // HTTP/1.x 继续向下走
+                }
+
+                // 2️⃣ HTTP/1.x 请求解析循环
+                parseHttp1Requests(client, buf, this);
             }
 
             @Override
@@ -118,6 +111,111 @@ public class ConnectionManager {
                 close(client);
             }
         });
+    }
+
+    private void parseHttp1Requests(
+            AsynchronousSocketChannel client,
+            ByteBuffer buf,
+            CompletionHandler<Integer, ByteBuffer> handler
+    ) {
+        RequestMonitorContext context = new RequestMonitorContext();
+        while (true) {
+            int requestEnd = findHttpRequestEnd(buf);
+            if (requestEnd == -1) {
+                buf.compact();
+                client.read(buf, buf, handler); // ⭐ 唯一 read 点
+                return;
+            }
+
+            byte[] data = new byte[requestEnd];
+            buf.get(data);
+            String requestText = new String(data);
+
+            // ====== DosDefender 防御 ======
+            if (dosDefender != null) {
+                String ip = getClientIp(client);
+                if (!dosDefender.allowRequest(ip)) {
+                    HttpResponse response = new HttpResponse();
+                    response.setHttpVersion(justifyHttpVersion(requestText));
+                    response.setStatus(HttpStatus.TOO_MANY_REQUESTS);
+
+                    ResponseBody body = new ResponseBody();
+                    body.addChunk("Too Many Requests".getBytes());
+                    body.end();
+                    response.setBody(body);
+
+                    response.setDefaultHeaders();
+                    response.setHeader("Content-Type", "text/plain");
+                    response.setHeader("Content-Length", String.valueOf("Too Many Requests".getBytes().length));
+
+                    writeResponse(client, response, false, buf, context);
+                    continue; // 继续处理 buf 里的其他请求（如果有）
+                }
+            }
+            // ============================
+
+            // 异步处理请求
+            workerPool.submit(() -> {
+                boolean shouldKeepAlive = shouldKeepAlive(requestText);
+                HttpResponse response = server.handleRawRequest(requestText);
+                writeResponse(client, response, shouldKeepAlive, buf, context);
+            });
+        }
+    }
+
+    /**
+     * 找到完整 HTTP/1 请求结束位置（按 \r\n\r\n 或 Content-Length）
+     * 返回 -1 表示请求未完整
+     */
+    private int findHttpRequestEnd(ByteBuffer buf) {
+        int startPos = buf.position();
+        int limit = buf.limit();
+
+        // 简单方式：找 \r\n\r\n
+        for (int i = startPos; i < limit - 3; i++) {
+            if (buf.get(i) == '\r' && buf.get(i + 1) == '\n'
+                    && buf.get(i + 2) == '\r' && buf.get(i + 3) == '\n') {
+                // 包含 header 长度
+                int headersEnd = i + 4;
+
+                // 检查是否有 Content-Length
+                int contentLength = getContentLength(buf, startPos, headersEnd);
+                if (contentLength > 0) {
+                    // 确保 body 也完整
+                    if (limit - headersEnd >= contentLength) {
+                        return headersEnd + contentLength - startPos;
+                    } else {
+                        return -1; // body 未完整
+                    }
+                } else {
+                    // 无 body，完整请求
+                    return headersEnd - startPos;
+                }
+            }
+        }
+
+        return -1; // header 未完整
+    }
+
+    /**
+     * 从 buffer 的 [start, end) 区间解析 Content-Length
+     */
+    private int getContentLength(ByteBuffer buf, int start, int end) {
+        byte[] headerBytes = new byte[end - start];
+        int oldPos = buf.position();
+        buf.position(start);
+        buf.get(headerBytes);
+        buf.position(oldPos);
+
+        String headers = new String(headerBytes);
+        for (String line : headers.split("\r\n")) {
+            if (line.toLowerCase().startsWith("content-length:")) {
+                try {
+                    return Integer.parseInt(line.split(":")[1].trim());
+                } catch (NumberFormatException ignored) {}
+            }
+        }
+        return 0;
     }
 
     private HttpVersion justifyHttpVersion(String requestText) {
@@ -219,7 +317,7 @@ public class ConnectionManager {
                 long responseTime = System.currentTimeMillis() - context.getStartTime();
                 performanceMonitor.recordRequestComplete(responseTime, 200);
             }
-            readNextRequest(client, ByteBuffer.allocate(8192));
+            handleClient(client);
         } else {
             if (performanceMonitor != null) {
                 long responseTime = System.currentTimeMillis() - context.getStartTime();
