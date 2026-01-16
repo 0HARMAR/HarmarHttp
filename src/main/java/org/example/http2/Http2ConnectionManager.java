@@ -6,6 +6,7 @@ import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.channels.CompletionHandler;
 import java.nio.charset.StandardCharsets;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -14,6 +15,7 @@ public class Http2ConnectionManager {
     private final AsynchronousSocketChannel client;
     private final Map<Integer, Http2Stream> streams = new ConcurrentHashMap<>();
     private final ByteBuffer readBuffer = ByteBuffer.allocate(8192);
+    private HpackDynamicTable hpackDynamicTable = new HpackDynamicTable(4096);
     private final FrameDecoder decoder = new FrameDecoder();
 
     public Http2ConnectionManager(AsynchronousSocketChannel client) {
@@ -84,8 +86,32 @@ public class Http2ConnectionManager {
 
         Http2Stream stream = streams.computeIfAbsent(streamId, Http2Stream::new);
 
+        // unpack HPACK
+        Map<String, String> headers = new ConcurrentHashMap<>();
+        byte[] hpack = frame.getPayload();
+        try {
+            HpackDecoder decoder = new HpackDecoder(hpackDynamicTable);
+            headers = decoder.decode(hpack);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            String key = entry.getKey();
+            String value = entry.getValue();
+            System.out.println("  " + key + ": " + value);
+        }
+
         // 构造响应帧
-        byte[] headersPayload = new byte[]{(byte) 0x88}; // :status=200
+        Map<String, String> responseHeaders = new LinkedHashMap<>();
+        responseHeaders.put(":status", "200");
+        responseHeaders.put("content-type", "text/plain");
+        responseHeaders.put("content-length", "5");
+        responseHeaders.put("server", "mini-http2");
+        responseHeaders.put("user", "bob");
+
+        byte[] headersPayload = new HpackEncoder(hpackDynamicTable).encode(responseHeaders);
+
         Frame headersFrame = new Frame(new FrameHeader(
                 headersPayload.length, FrameType.HEADERS, EnumSet.of(FrameFlag.END_HEADERS), streamId
         ), headersPayload);
