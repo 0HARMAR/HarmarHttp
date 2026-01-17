@@ -62,106 +62,91 @@ public class ConnectionManager {
 
     private void handleClient(AsynchronousSocketChannel client) {
         System.out.println("⚡ [ConnectionManager] New connection from " + getRemoteAddress(client));
-        performanceMonitor.recordRequestStart();
+        ConnectionContext ctx = new ConnectionContext(client);
+        startRead(ctx);
+    }
 
-        ByteBuffer buffer = ByteBuffer.allocate(8192);
-
-        client.read(buffer, buffer, new CompletionHandler<Integer, ByteBuffer>() {
-
-            private Protocol protocol = null;
-
+    private void startRead(ConnectionContext ctx) {
+        ctx.client.read(ctx.buffer, ctx, new CompletionHandler<Integer, ConnectionContext>() {
             @Override
-            public void completed(Integer bytesRead, ByteBuffer buf) {
+            public void completed(Integer bytesRead, ConnectionContext ctx) {
                 if (bytesRead == -1) {
-                    close(client);
+                    close(ctx.client);
                     return;
                 }
 
-                buf.flip();
+                ctx.buffer.flip();
 
-                // 1️⃣ 协议探测阶段
-                if (protocol == null) {
-                    protocol = ProtocolDetector.detect(buf);
+                // 协议探测阶段
+                if (ctx.protocol == null) {
+                    ctx.protocol = ProtocolDetector.detect(ctx.buffer);
 
-                    if (protocol == null) {
-                        buf.compact();
-                        client.read(buf, buf, this);
+                    if (ctx.protocol == null) {
+                        ctx.buffer.compact();
+                        ctx.client.read(ctx.buffer, ctx, this);
                         return;
                     }
 
-                    if (protocol == Protocol.HTTP2) {
+                    if (ctx.protocol == Protocol.HTTP2) {
                         System.out.println("⚡ Detected HTTP/2 connection");
-                        Http2ConnectionManager http2 =
-                                new Http2ConnectionManager(client);
+                        Http2ConnectionManager http2 = new Http2ConnectionManager(ctx.client);
                         http2.start();
                         return; // HTTP/2 接管
                     }
 
                     System.out.println("⚡ Detected HTTP/1.x connection");
-                    // HTTP/1.x 继续向下走
                 }
 
-                // 2️⃣ HTTP/1.x 请求解析循环
-                parseHttp1Requests(client, buf, this);
+                // HTTP/1.x 请求解析循环
+                parseHttp1Requests(ctx, this);
             }
 
             @Override
-            public void failed(Throwable exc, ByteBuffer attachment) {
+            public void failed(Throwable exc, ConnectionContext ctx) {
                 exc.printStackTrace();
-                close(client);
+                close(ctx.client);
             }
         });
     }
 
-    private void parseHttp1Requests(
-            AsynchronousSocketChannel client,
-            ByteBuffer buf,
-            CompletionHandler<Integer, ByteBuffer> handler
-    ) {
-        RequestMonitorContext context = new RequestMonitorContext();
-        while (true) {
-            int requestEnd = findHttpRequestEnd(buf);
-            if (requestEnd == -1) {
-                buf.compact();
-                client.read(buf, buf, handler); // ⭐ 唯一 read 点
-                return;
-            }
 
-            byte[] data = new byte[requestEnd];
-            buf.get(data);
-            String requestText = new String(data);
-
-            // ====== DosDefender 防御 ======
-            if (dosDefender != null) {
-                String ip = getClientIp(client);
-                if (!dosDefender.allowRequest(ip)) {
-                    HttpResponse response = new HttpResponse();
-                    response.setHttpVersion(justifyHttpVersion(requestText));
-                    response.setStatus(HttpStatus.TOO_MANY_REQUESTS);
-
-                    ResponseBody body = new ResponseBody();
-                    body.addChunk("Too Many Requests".getBytes());
-                    body.end();
-                    response.setBody(body);
-
-                    response.setDefaultHeaders();
-                    response.setHeader("Content-Type", "text/plain");
-                    response.setHeader("Content-Length", String.valueOf("Too Many Requests".getBytes().length));
-
-                    writeResponse(client, response, false, buf, context);
-                    continue; // 继续处理 buf 里的其他请求（如果有）
-                }
-            }
-            // ============================
-
-            // 异步处理请求
-            workerPool.submit(() -> {
-                boolean shouldKeepAlive = shouldKeepAlive(requestText);
-                HttpResponse response = server.handleRawRequest(requestText);
-                writeResponse(client, response, shouldKeepAlive, buf, context);
-            });
+    private void parseHttp1Requests(ConnectionContext ctx, CompletionHandler<Integer, ConnectionContext> handler) {
+        int requestEnd = findHttpRequestEnd(ctx.buffer);
+        if (requestEnd == -1) {
+            ctx.buffer.compact();
+            ctx.client.read(ctx.buffer, ctx, handler);
+            return;
         }
+
+        byte[] data = new byte[requestEnd];
+        ctx.buffer.get(data);
+        String requestText = new String(data);
+
+        boolean shouldKeepAlive = shouldKeepAlive(requestText);
+
+        // DosDefender
+        if (dosDefender != null && !dosDefender.allowRequest(getClientIp(ctx.client))) {
+            HttpResponse response = new HttpResponse();
+            response.setHttpVersion(justifyHttpVersion(requestText));
+            response.setStatus(HttpStatus.TOO_MANY_REQUESTS);
+
+            ResponseBody body = new ResponseBody();
+            body.addChunk("Too Many Requests".getBytes());
+            body.end();
+            response.setBody(body);
+            response.setDefaultHeaders();
+            response.setHeader("Content-Type", "text/plain");
+            response.setHeader("Content-Length", String.valueOf("Too Many Requests".getBytes().length));
+
+            writeResponse(ctx, response, shouldKeepAlive, handler);
+            return;
+        }
+
+        // 正常处理
+        HttpResponse response = server.handleRawRequest(requestText);
+        writeResponse(ctx, response, shouldKeepAlive, handler);
     }
+
 
     /**
      * 找到完整 HTTP/1 请求结束位置（按 \r\n\r\n 或 Content-Length）
@@ -230,100 +215,108 @@ public class ConnectionManager {
         }
     }
 
-    public void writeResponse(AsynchronousSocketChannel client,
-                              HttpResponse response,
-                              boolean shouldKeepAlive,
-                              ByteBuffer buffer,
-                              RequestMonitorContext context) {
+    private void writeResponse(ConnectionContext ctx, HttpResponse response,
+                               boolean shouldKeepAlive,
+                               CompletionHandler<Integer, ConnectionContext> handler) {
+        if (shouldKeepAlive) {
+            response.setHeader("Connection", "keep-alive");
+        } else {
+            response.setHeader("Connection", "close");
+        }
         String version = response.getHttpVersion().toString();
-        String statusLine = version + " " + response.getStatus().code + " " + response.getStatus().message.toString() + "\r\n";
-        Map<String, String> headers = response.getHeaders();
-        String headersText = headers.entrySet().stream()
-                .map(entry -> entry.getKey() + ": " + entry.getValue())
+        String statusLine = version + " " + response.getStatus().code + " " + response.getStatus().message + "\r\n";
+        String headersText = response.getHeaders().entrySet().stream()
+                .map(e -> e.getKey() + ": " + e.getValue())
                 .collect(java.util.stream.Collectors.joining("\r\n"));
-        byte[] responseLineAndHeader = (statusLine + headersText + "\r\n\r\n").getBytes();
-        ByteBuffer headerBuf = ByteBuffer.wrap(responseLineAndHeader);
+        ByteBuffer headerBuf = ByteBuffer.wrap((statusLine + headersText + "\r\n\r\n").getBytes());
 
-        client.write(headerBuf, headerBuf, new CompletionHandler<>() {
+        ctx.client.write(headerBuf, ctx, new CompletionHandler<>() {
             @Override
-            public void completed(Integer result, ByteBuffer buf) {
-                if (buf.hasRemaining()) {
-                    client.write(buf, buf, this);
+            public void completed(Integer result, ConnectionContext ctx) {
+                if (headerBuf.hasRemaining()) {
+                    ctx.client.write(headerBuf, ctx, this);
                 } else {
-                    // ✅ header write completely, write chunks
-                    writeNextChunk(client, response, shouldKeepAlive, buffer, context);
+                    response.getBody().setOnDataAvailable(() -> {
+                        tryWriteNextChunk(ctx, response, shouldKeepAlive, handler);
+                    });
+
+                    tryWriteNextChunk(ctx, response, shouldKeepAlive, handler);
                 }
             }
 
             @Override
-            public void failed(Throwable exc, ByteBuffer buf) {
-                System.err.println("❌ Header write failed: " + exc.getMessage());
-                close(client);
+            public void failed(Throwable exc, ConnectionContext ctx) {
+                exc.printStackTrace();
+                close(ctx.client);
             }
         });
     }
 
-    public void writeNextChunk(AsynchronousSocketChannel client,
-                              HttpResponse response,
-                              boolean shouldKeepAlive,
-                              ByteBuffer buffer, RequestMonitorContext context) {
-        // write chunks
+    void tryWriteNextChunk(ConnectionContext ctx, HttpResponse response,
+                           boolean shouldKeepAlive,
+                           CompletionHandler<Integer, ConnectionContext> handler) {
         ResponseBody body = response.getBody();
-        ByteBuffer nextChunk = body.poll();
 
-        if (nextChunk == null) {
-            if (!body.isEnd()) {
-                client.write(ByteBuffer.allocate(0), null, new CompletionHandler<Integer, Object>() {
-                    @Override
-                    public void completed(Integer result, Object attachment) {
-                        writeNextChunk(client, response, shouldKeepAlive, buffer, context);
-                    }
-
-                    @Override
-                    public void failed(Throwable exc, Object attachment) {
-                        close(client);
-                    }
-                });
-                return;
-            }
-
-            finishOrKeepAlive(client, shouldKeepAlive, buffer, context);
-            return;
+        if (!body.trySetWriting()) {
+            return; // 已有 write 在飞
         }
 
-        client.write(nextChunk, nextChunk, new CompletionHandler<Integer, ByteBuffer>() {
+        ByteBuffer buf = body.poll();
+
+        if (buf == null) {
+            body.clearWriting();
+
+            if (body.isEnd()) {
+                finishOrKeepAlive(ctx, shouldKeepAlive, handler);
+            }
+            return;
+        }
+        writeNextChunk(ctx, response, shouldKeepAlive, handler, buf);
+    }
+
+    private void writeNextChunk(ConnectionContext ctx, HttpResponse response,
+                                boolean shouldKeepAlive,
+                                CompletionHandler<Integer, ConnectionContext> handler,
+                                ByteBuffer chunk) {
+        ctx.client.write(chunk, ctx, new CompletionHandler<>() {
 
             @Override
-            public void completed(Integer result, ByteBuffer attachment) {
-                if (attachment.hasRemaining()) {
-                    client.write(attachment, attachment, this);
-                } else {
-                    writeNextChunk(client, response, shouldKeepAlive, buffer, context);
+            public void completed(Integer result, ConnectionContext attachment) {
+                if (result < 0) {
+                    close(ctx.client);
+                    return;
                 }
+
+                if (chunk.hasRemaining()) {
+                    ctx.client.write(chunk, ctx, this);
+                    return;
+                }
+
+                response.getBody().clearWriting();
+                tryWriteNextChunk(ctx, response, shouldKeepAlive, handler);
             }
 
             @Override
-            public void failed(Throwable exc, ByteBuffer attachment) {
-                System.err.println("❌ Write failed: " + exc.getMessage());
-                close(client);
+            public void failed(Throwable exc, ConnectionContext attachment) {
+                close(ctx.client);
             }
         });
     }
+    private void finishOrKeepAlive(ConnectionContext ctx, boolean shouldKeepAlive,
+                                   CompletionHandler<Integer, ConnectionContext> handler) {
+        long responseTime = System.currentTimeMillis() - ctx.monitor.getStartTime();
+        if (performanceMonitor != null) {
+            performanceMonitor.recordRequestComplete(responseTime, 200);
+        }
 
-    private void finishOrKeepAlive(AsynchronousSocketChannel client, boolean shouldKeepAlive, ByteBuffer buffer, RequestMonitorContext context) {
         if (shouldKeepAlive) {
-            buffer.clear();
-            if (performanceMonitor != null) {
-                long responseTime = System.currentTimeMillis() - context.getStartTime();
-                performanceMonitor.recordRequestComplete(responseTime, 200);
-            }
-            handleClient(client);
+            // 使用 compact 保留 buffer 中未读数据
+            ctx.buffer.compact();
+            // 只在响应完全写完后再触发 read
+            startRead(ctx);
         } else {
-            if (performanceMonitor != null) {
-                long responseTime = System.currentTimeMillis() - context.getStartTime();
-                performanceMonitor.recordRequestComplete(responseTime, 200);
-            }
-            close(client);
+            try { ctx.client.shutdownOutput(); } catch (IOException ignored) {}
+            close(ctx.client);
         }
     }
 

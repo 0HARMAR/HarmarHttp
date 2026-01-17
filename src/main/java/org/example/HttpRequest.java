@@ -7,10 +7,10 @@ import java.util.Map;
 
 // http request
 public class  HttpRequest {
-    String method;
-    String path;
-    String protocol;
-    Map<String, String> headers = new LinkedHashMap<>();
-    boolean hasBody;
+    public String method;
+    public String path;
+    public String protocol;
+    public Map<String, String> headers = new LinkedHashMap<>();
+    public boolean hasBody;
     byte[] body;
 }

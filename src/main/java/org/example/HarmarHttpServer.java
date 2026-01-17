@@ -14,9 +14,14 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.cert.CertificateException;
 import java.util.Date;
 import java.util.Map;
 
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.util.SelfSignedCertificate;
+import org.example.https.NettyTlsServer;
 import org.example.monitor.MonitorEndpoints;
 import org.example.monitor.PerformanceMonitor;
 import org.example.security.DosDefender;
@@ -33,7 +38,8 @@ public class HarmarHttpServer {
     private final FileCacheManager fileCache;
     private final DosDefender dosDefender;
     private final Router router = new Router();
-    private final ConnectionManager connectionManager;
+    private final ConnectionManager connectionManager; // HTTP
+    private final NettyTlsServer nettyTlsServer; // HTTPS
 
     public HarmarHttpServer(int port, String rootDir) throws IOException {
         this(port, rootDir,true, true);
@@ -58,9 +64,19 @@ public class HarmarHttpServer {
             this.monitorEndpoints = null;
         }
 
-        this.connectionManager = new ConnectionManager(this, port, 10,
+        // http default 80 port
+        this.connectionManager = new ConnectionManager(this, 80, 10,
                 enableDosDefender ? performanceMonitor : null,
                 enableDosDefender ? dosDefender : null);
+
+        SelfSignedCertificate ssc = null;
+        try {
+            ssc = new SelfSignedCertificate();
+        } catch (CertificateException e) {
+            throw new RuntimeException(e);
+        }
+        SslContext sslContext = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey()).build();
+        this.nettyTlsServer = new NettyTlsServer(port, sslContext, router);
 
         registerBuildInRoutes();
     }
@@ -119,6 +135,12 @@ public class HarmarHttpServer {
 
         connectionManager.start();
         this.isRunning = true;
+
+        try {
+            nettyTlsServer.start();
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
 
         // validate is the rootDir exist
         validateRootDirectory();

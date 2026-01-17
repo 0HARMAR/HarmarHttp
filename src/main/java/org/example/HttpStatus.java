@@ -33,4 +33,9 @@ public enum HttpStatus {
         }
         return null;
     }
+
+    @Override
+    public String toString() {
+        return code + " " + message;
+    }
 }
