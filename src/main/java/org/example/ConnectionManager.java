@@ -1,5 +1,7 @@
 package org.example;
 
+import org.example.connection.AioConnection;
+import org.example.connection.Connection;
 import org.example.http2.Http2ConnectionManager;
 import org.example.monitor.PerformanceMonitor;
 import org.example.monitor.RequestMonitorContext;
@@ -89,7 +91,8 @@ public class ConnectionManager {
 
                     if (ctx.protocol == Protocol.HTTP2) {
                         System.out.println("⚡ Detected HTTP/2 connection");
-                        Http2ConnectionManager http2 = new Http2ConnectionManager(ctx.client);
+                        Connection connection = new AioConnection(ctx.client);
+                        Http2ConnectionManager http2 = new Http2ConnectionManager(connection);
                         http2.start();
                         return; // HTTP/2 接管
                     }

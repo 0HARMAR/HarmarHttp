@@ -30,15 +30,25 @@ public enum FrameFlag {
         return "0x" + Integer.toHexString(value) + " (" + name() + "): " + description;
     }
 
-    public static EnumSet<FrameFlag> parse(int flagsByte) {
+    public static EnumSet<FrameFlag> parse(FrameType type, int flagsByte) {
         EnumSet<FrameFlag> set = EnumSet.noneOf(FrameFlag.class);
-        for (FrameFlag flag : values()) {
-            if ((flagsByte & flag.value) != 0) {
-                set.add(flag);
+
+        switch (type) {
+            case HEADERS, DATA -> {
+                if ((flagsByte & 0x1) != 0) set.add(END_STREAM);
+                if ((flagsByte & 0x4) != 0) set.add(END_HEADERS);
+                if ((flagsByte & 0x8) != 0) set.add(PADDED);
+                if ((flagsByte & 0x20) != 0) set.add(PRIORITY);
             }
+            case SETTINGS, PING -> {
+                if ((flagsByte & 0x1) != 0) set.add(ACK);
+            }
+            default -> {}
         }
+
         return set;
     }
+
 
     public int getFlagBit() {
         return value;

@@ -45,8 +45,12 @@ public class Frame {
 
         // 写入 Flags（8 bit）
         int flagsByte = 0;
-        for (FrameFlag flag : header.FrameFlags) {
-            flagsByte |= flag.getFlagBit();
+        if (header.FrameFlags != null) {
+            for (FrameFlag flag : header.FrameFlags) {
+                flagsByte |= flag.getFlagBit();
+            }
+        } else {
+            flagsByte = 0;
         }
         buf.put((byte) flagsByte);
 

@@ -1,17 +1,23 @@
 package org.example.http2;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
+
+import static org.example.http2.HuffmanTable.HUFFMAN_TABLE;
 
 public class HpackDecoder {
 
     private HpackDynamicTable hpackDynamicTable;
     private static final String[][] STATIC_TABLE = StaticTable.TABLE;
+    private static HuffmanNode HUFFMAN_ROOT = null;
 
     public HpackDecoder(HpackDynamicTable hpackDynamicTable) {
         this.hpackDynamicTable = hpackDynamicTable;
+        this.HUFFMAN_ROOT = buildHuffmanTrie();
     }
 
     // --------- 前缀整数解码 ---------
@@ -33,20 +39,88 @@ public class HpackDecoder {
         return value;
     }
 
-    // --------- 字符串解码 (不处理 Huffman) ---------
-    private static String decodeString(ByteArrayInputStream in, int firstByte) throws IOException {
+    // --------- 字符串解码 ---------
+    private String decodeString(ByteArrayInputStream in, int firstByte) throws IOException {
         boolean huffman = (firstByte & 0x80) != 0;
         int length = decodeInteger(in, 7, firstByte);
+
         byte[] buf = new byte[length];
         int read = in.read(buf);
         if (read != length) throw new IOException("Unexpected string length");
-        if (huffman) throw new IOException("Huffman not supported in stage0");
-        return new String(buf, "UTF-8");
+
+        if (huffman) {
+            byte[] decoded = huffmanDecode(buf);
+            return new String(decoded, StandardCharsets.UTF_8);
+        } else {
+            return new String(buf, StandardCharsets.UTF_8);
+        }
     }
 
-    public Map<String, String> decode(byte[] payload) throws IOException {
+
+    HuffmanNode buildHuffmanTrie() {
+        HuffmanNode root = new HuffmanNode();
+
+        for (int[] entry : HUFFMAN_TABLE) {
+            int symbol = entry[0];
+            int bits = entry[1];
+            int len = entry[2];
+
+            HuffmanNode node = root;
+            for (int i = len - 1; i >= 0; i--) {
+                int bit = (bits >> i) & 1;
+                if (bit == 0) {
+                    if (node.zero == null) node.zero = new HuffmanNode();
+                    node = node.zero;
+                } else {
+                    if (node.one == null) node.one = new HuffmanNode();
+                    node = node.one;
+                }
+            }
+            node.symbol = symbol;
+        }
+        return root;
+    }
+
+    byte[] huffmanDecode(byte[] encoded) throws IOException {
+        BitReader reader = new BitReader(encoded);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+        HuffmanNode node = HUFFMAN_ROOT;
+
+        while (reader.hasMoreBits()) {
+            int bit = reader.readBit();
+            node = (bit == 0) ? node.zero : node.one;
+
+            if (node == null) {
+                throw new IOException("Invalid Huffman code");
+            }
+
+            if (node.symbol != -1) {
+                if (node.symbol == 256) {
+                    throw new IOException("Unexpected EOS");
+                }
+                out.write(node.symbol);
+                node = HUFFMAN_ROOT;
+            }
+        }
+
+        return out.toByteArray();
+    }
+
+    public Map<String, String> decode(Frame frame) throws IOException {
         Map<String, String> headers = new LinkedHashMap<>();
-        ByteArrayInputStream in = new ByteArrayInputStream(payload);
+        ByteArrayInputStream in = new ByteArrayInputStream(frame.payload);
+
+        if (frame.header.FrameFlags.contains(FrameFlag.PADDED)) {
+            // Pad Length (1 byte)
+            in.read();
+        }
+
+        if (frame.header.FrameFlags.contains(FrameFlag.PRIORITY)) {
+            // Priority (5 bytes)
+            byte[] priority = new byte[5];
+            in.read(priority);
+        }
 
         while (in.available() > 0) {
             int firstByte = in.read();

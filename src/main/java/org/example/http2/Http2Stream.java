@@ -32,6 +32,11 @@ public class Http2Stream {
 
     // ------------------- 接收帧事件 -------------------
     public synchronized void onRecvFrame(Frame frame) {
+        if (state == StreamState.CLOSED) {
+            System.out.println("⚠️ Stream " + streamId + " is closed, can't receive frame");
+            return;
+        }
+
         switch (frame.getHeader().FrameType) {
             case HEADERS -> handleRecvHeaders(frame);
             case DATA -> handleRecvData(frame);
@@ -81,16 +86,6 @@ public class Http2Stream {
         responseFrames.clear();
     }
 
-    // ------------------- 发送帧事件 -------------------
-    public synchronized void onSendFrame(Frame frame) {
-        responseFrames.offer(frame);
-
-        if (frame.getHeader().FrameFlags.contains(FrameFlag.END_STREAM)) {
-            if (state == StreamState.OPEN) state = StreamState.HALF_CLOSED_LOCAL;
-            else if (state == StreamState.HALF_CLOSED_REMOTE) state = StreamState.CLOSED;
-        }
-    }
-
     // ------------------- 状态查询 -------------------
     public boolean isOpen() {
         return state == StreamState.OPEN;
@@ -109,6 +104,9 @@ public class Http2Stream {
     }
 
     public synchronized void queueResponse(Frame frame) {
+        if (state == StreamState.CLOSED) {
+            System.out.println("⚠️ Stream " + streamId + " is closed, can't queue response");
+        }
         // 放入响应队列
         responseFrames.offer(frame);
 

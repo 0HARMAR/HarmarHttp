@@ -1,42 +1,42 @@
 package org.example.http2;
 
-import org.example.connection.Connection;
-
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.AsynchronousSocketChannel;
-import java.nio.channels.CompletionHandler;
 import java.nio.charset.StandardCharsets;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingQueue;
 
-public class Http2ConnectionManager {
-    private final Connection client;
+public class Http2Manager {
+    private BlockingQueue<ByteBuffer> controlFrameQueue = new LinkedBlockingQueue<>();
     private final Map<Integer, Http2Stream> streams = new ConcurrentHashMap<>();
     private final ByteBuffer readBuffer = ByteBuffer.allocate(8192);
     private HpackDynamicTable hpackDynamicTable = new HpackDynamicTable(4096);
     private final FrameDecoder decoder = new FrameDecoder();
 
-    public Http2ConnectionManager(Connection client) {
-        this.client = client;
+    public Http2Manager() {
+        // 默认设置
+        Frame settings = new Frame(new FrameHeader(0, FrameType.SETTINGS, null, 0), null);
+        ByteBuffer buf = ByteBuffer.allocate(9); // fix 9 bytes frame header, no payload
+        buf.put(settings.toBytes());
+        buf.flip();
+        try {
+            controlFrameQueue.put(buf);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
     }
 
-    public void start() {
-        readNextFrame();
-    }
-
-    private void readNextFrame() {
-        client.onRead(readBuffer -> {
-            decodeAndHandle(readBuffer);
-        });
-    }
-
-    public void decodeAndHandle(ByteBuffer readBuffer) {
+    public boolean decodeAndHandle(ByteBuffer readBuffer) {
         // 解码所有完整帧
         List<Frame> frames = decoder.decode(readBuffer);
+        if (frames.isEmpty()) {
+            return false;
+        }
 
         readBuffer.clear();
 
@@ -59,14 +59,17 @@ public class Http2ConnectionManager {
                     stream.onRecvFrame(frame);
 
                 }
+                case WINDOW_UPDATE, GOAWAY -> {
+
+                }
 
                 default -> {
                     System.out.println("⚠️ Unknown frame type: " + frame.header.FrameType);
                 }
             }
         }
+        return true;
     }
-
 
     private void handleHeaders(Frame frame) {
         int streamId = frame.header.StreamID;
@@ -92,10 +95,7 @@ public class Http2ConnectionManager {
         // 构造响应帧
         Map<String, String> responseHeaders = new LinkedHashMap<>();
         responseHeaders.put(":status", "200");
-        responseHeaders.put("content-type", "text/plain");
-        responseHeaders.put("content-length", "5");
         responseHeaders.put("server", "mini-http2");
-        responseHeaders.put("user", "bob");
 
         byte[] headersPayload = new HpackEncoder(hpackDynamicTable).encode(responseHeaders);
 
@@ -103,27 +103,23 @@ public class Http2ConnectionManager {
                 headersPayload.length, FrameType.HEADERS, EnumSet.of(FrameFlag.END_HEADERS), streamId
         ), headersPayload);
 
-        byte[] dataPayload = "hello".getBytes(StandardCharsets.UTF_8);
         Frame dataFrame = new Frame(new FrameHeader(
-                dataPayload.length, FrameType.DATA, EnumSet.of(FrameFlag.END_STREAM), streamId
-        ), dataPayload);
+                "Hello, World!".getBytes(StandardCharsets.UTF_8).length, FrameType.DATA, EnumSet.of(FrameFlag.END_STREAM), streamId
+        ), "Hello, World!".getBytes(StandardCharsets.UTF_8));
 
         // 放入响应队列，由 Stream 状态机控制顺序
         stream.queueResponse(headersFrame);
         stream.queueResponse(dataFrame);
-
-        // 启动写
-        writeNext(stream);
     }
 
     /**
      *  * +-----------------------------------------------+
      *  * | Length (24) = 0                               |
      *  * | Type (8)    = 0x4 (SETTINGS)                  |
-     *  * | Flags (8)   = 0x1 (ACK)                       |
+     *  * | Flags (8)                                     |
      *  * | Stream ID (31) = 0                             |
      *  * +-----------------------------------------------+
-     *  * | Payload = none (长度为0)                        |
+     *  * | Payload                                        |
      */
     private void handleSettings(Frame frame) {
         // ACK = 1, client ACK, ignore
@@ -131,25 +127,62 @@ public class Http2ConnectionManager {
             return;
         }
 
+        // parse config and apply
+        byte[] settingsConfig = frame.payload;
+        EnumSet<SettingsConfig> configs = parseConfig(settingsConfig);
+        for (SettingsConfig config : configs) {
+            System.out.println("  " + config.name() + ": " + config.getDefaultValue());
+        }
+
         // ACK = 0, apply settings and send ACK to client
         Frame ack = new Frame(new FrameHeader(0, FrameType.SETTINGS, EnumSet.of(FrameFlag.ACK), 0), null);
         ByteBuffer buf = ByteBuffer.allocate(9); // fix 9 bytes frame header, no payload
         buf.put(ack.toBytes());
         buf.flip();
-        client.write(buf);
+        try {
+            controlFrameQueue.put(buf);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
     }
 
-    private void writeNext(Http2Stream stream) {
-        Frame frame = stream.getResponseQueue().poll();
-        if (frame == null) return; // 队列空，等下一次 push
+    private EnumSet<SettingsConfig> parseConfig(byte[] payload) {
+        EnumSet<SettingsConfig> result = EnumSet.noneOf(SettingsConfig.class);
 
-        ByteBuffer buf = ByteBuffer.wrap(frame.toBytes());
-        client.write(buf);
+        if (payload == null || payload.length % 6 != 0) {
+            throw new IllegalArgumentException("Invalid SETTINGS payload length");
+        }
+
+        ByteBuffer buffer = ByteBuffer.wrap(payload);
+        while (buffer.hasRemaining()) {
+            // 2 bytes ID (unsigned short)
+            int id = Short.toUnsignedInt(buffer.getShort());
+            // 4 bytes value (unsigned int)
+            int value = buffer.getInt();
+
+            SettingsConfig config = SettingsConfig.fromId(id);
+            if (config != null) {
+                // 创建一个新的枚举实例并存储 value
+                // 因为 enum 本身不能存值，我们可以用一个临时封装类或者 Map 记录
+                // 这里为了简单，直接用 EnumSet 返回“存在的配置项”
+                result.add(config);
+
+                // 你也可以在这里直接应用 value，比如：
+                // applySetting(config, value);
+            } else {
+                // 未知设置项，RFC 建议忽略
+                System.out.println("Unknown SETTINGS ID: " + id);
+            }
+        }
+
+        return result;
     }
 
+    public BlockingQueue<ByteBuffer> getControlFrameQueue() {
+        return controlFrameQueue;
+    }
 
-    private void close() {
-        client.close();
-        System.out.println("⚡ HTTP/2 connection closed");
+    public Map<Integer, Http2Stream> getStreams() {
+        return this.streams;
     }
 }

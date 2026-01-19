@@ -35,7 +35,7 @@ public class FrameHeader {
         FrameType type = org.example.http2.FrameType.fromTypeCode(b4);
 
         int flagsByte = buf.get() & 0xff;
-        EnumSet<FrameFlag> flags = FrameFlag.parse(flagsByte);
+        EnumSet<FrameFlag> flags = FrameFlag.parse(type, flagsByte);
 
         int streamId = buf.getInt() & 0x7fffffff;
 

@@ -69,14 +69,7 @@ public class HarmarHttpServer {
                 enableDosDefender ? performanceMonitor : null,
                 enableDosDefender ? dosDefender : null);
 
-        SelfSignedCertificate ssc = null;
-        try {
-            ssc = new SelfSignedCertificate();
-        } catch (CertificateException e) {
-            throw new RuntimeException(e);
-        }
-        SslContext sslContext = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey()).build();
-        this.nettyTlsServer = new NettyTlsServer(port, sslContext, router);
+        this.nettyTlsServer = new NettyTlsServer(port,router);
 
         registerBuildInRoutes();
     }
