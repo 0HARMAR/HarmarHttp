@@ -14,6 +14,9 @@ public class ResponseBody {
 
     private Runnable onDataAvailable;
 
+    // only in no chunk transfer
+    private boolean isBigFile = false;
+
     public void setOnDataAvailable(Runnable onDataAvailable) {
         this.onDataAvailable = onDataAvailable;
     }
@@ -29,6 +32,10 @@ public class ResponseBody {
     }
 
     public void addChunk(byte[] data) {
+        if (data.length > 1024 * 1024 * 4) {
+            isBigFile = true;
+        }
+
         if (data == null) {
             data = new byte[0];
         }
@@ -98,5 +105,9 @@ public class ResponseBody {
 
     public boolean isChunkedTransfer() {
         return ChunkedTransfer;
+    }
+
+    public boolean isBigFile() {
+        return isBigFile;
     }
 }

@@ -7,7 +7,7 @@ public interface Connection {
     /**
      * 异步写数据
      */
-    void write(ByteBuffer buffer);
+    void write();
 
     /**
      * 注册读回调（有数据就通知）

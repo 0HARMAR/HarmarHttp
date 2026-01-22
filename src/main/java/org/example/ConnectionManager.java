@@ -11,14 +11,17 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.AsynchronousServerSocketChannel;
 import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.channels.CompletionHandler;
-import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+
+import static org.example.protocol.HttpRequestParser.findHttpRequestEnd;
+import static org.example.protocol.HttpRequestParser.justifyHttpVersion;
 
 
 public class ConnectionManager {
@@ -27,9 +30,12 @@ public class ConnectionManager {
     private final HarmarHttpServer server;
     private PerformanceMonitor performanceMonitor = null;
     private DosDefender dosDefender = null;
+    private Router router;
+
+    private Map<String, Integer> ipLimitMap = new ConcurrentHashMap<>();
 
     public ConnectionManager(HarmarHttpServer server, int port, int workerThreads,
-                             PerformanceMonitor performanceMonitor, DosDefender dosDefender) throws IOException {
+                             PerformanceMonitor performanceMonitor, DosDefender dosDefender, Router router) throws IOException {
         this.server = server;
         this.workerPool = Executors.newFixedThreadPool(workerThreads);
         this.serverChannel = AsynchronousServerSocketChannel.open().bind(
@@ -37,6 +43,7 @@ public class ConnectionManager {
         );
         this.performanceMonitor = performanceMonitor;
         this.dosDefender = dosDefender;
+        this.router = router;
     }
 
     public void start() {
@@ -89,10 +96,10 @@ public class ConnectionManager {
                         return;
                     }
 
-                    if (ctx.protocol == Protocol.HTTP2) {
+                    if (ctx.protocol == Protocol.HTTP2_PLAINTEXT) {
                         System.out.println("⚡ Detected HTTP/2 connection");
-                        Connection connection = new AioConnection(ctx.client);
-                        Http2ConnectionManager http2 = new Http2ConnectionManager(connection);
+                        AioConnection connection = new AioConnection(ctx.client);
+                        Http2ConnectionManager http2 = new Http2ConnectionManager(connection, router);
                         http2.start();
                         return; // HTTP/2 接管
                     }
@@ -150,77 +157,45 @@ public class ConnectionManager {
         writeResponse(ctx, response, shouldKeepAlive, handler);
     }
 
-
-    /**
-     * 找到完整 HTTP/1 请求结束位置（按 \r\n\r\n 或 Content-Length）
-     * 返回 -1 表示请求未完整
-     */
-    private int findHttpRequestEnd(ByteBuffer buf) {
-        int startPos = buf.position();
-        int limit = buf.limit();
-
-        // 简单方式：找 \r\n\r\n
-        for (int i = startPos; i < limit - 3; i++) {
-            if (buf.get(i) == '\r' && buf.get(i + 1) == '\n'
-                    && buf.get(i + 2) == '\r' && buf.get(i + 3) == '\n') {
-                // 包含 header 长度
-                int headersEnd = i + 4;
-
-                // 检查是否有 Content-Length
-                int contentLength = getContentLength(buf, startPos, headersEnd);
-                if (contentLength > 0) {
-                    // 确保 body 也完整
-                    if (limit - headersEnd >= contentLength) {
-                        return headersEnd + contentLength - startPos;
-                    } else {
-                        return -1; // body 未完整
-                    }
-                } else {
-                    // 无 body，完整请求
-                    return headersEnd - startPos;
-                }
-            }
-        }
-
-        return -1; // header 未完整
-    }
-
-    /**
-     * 从 buffer 的 [start, end) 区间解析 Content-Length
-     */
-    private int getContentLength(ByteBuffer buf, int start, int end) {
-        byte[] headerBytes = new byte[end - start];
-        int oldPos = buf.position();
-        buf.position(start);
-        buf.get(headerBytes);
-        buf.position(oldPos);
-
-        String headers = new String(headerBytes);
-        for (String line : headers.split("\r\n")) {
-            if (line.toLowerCase().startsWith("content-length:")) {
-                try {
-                    return Integer.parseInt(line.split(":")[1].trim());
-                } catch (NumberFormatException ignored) {}
-            }
-        }
-        return 0;
-    }
-
-    private HttpVersion justifyHttpVersion(String requestText) {
-        // get http version string
-        String[] lines = requestText.split("\r\n");
-        String httpVersion = lines[0].split(" ")[0];
-
-        if (httpVersion.equals("HTTP/1.0")) {
-            return HttpVersion.HTTP_1_0;
-        } else {
-            return HttpVersion.HTTP_1_1;
-        }
-    }
-
     private void writeResponse(ConnectionContext ctx, HttpResponse response,
                                boolean shouldKeepAlive,
                                CompletionHandler<Integer, ConnectionContext> handler) {
+        if (response.getBody().isBigFile()) {
+            SocketAddress clientAddress = null;
+            try {
+                clientAddress = ctx.client.getRemoteAddress();
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+
+            if (clientAddress instanceof InetSocketAddress) {
+                InetSocketAddress inetAddress = (InetSocketAddress) clientAddress;
+                String ip = inetAddress.getAddress().getHostAddress();
+                int port = inetAddress.getPort();
+
+                System.out.println("客户端连接来自: " + ip + ":" + port);
+
+                if (ipLimitMap.containsKey(ip)) {
+                    Integer count = ipLimitMap.get(ip);
+                    if (count >= 3) {
+                        System.out.println("客户端IP被限制访问: " + ip);
+                        response.setStatus(HttpStatus.TOO_MANY_REQUESTS);
+
+                        ResponseBody body = new ResponseBody();
+                        body.addChunk("Too Many Requests".getBytes());
+                        body.end();
+                        response.setBody(body);
+                        response.setDefaultHeaders();
+                        response.setHeader("Content-Type", "text/plain");
+                        response.setHeader("Content-Length", String.valueOf("Too Many Requests".getBytes().length));
+                    } else {
+                        ipLimitMap.put(ip, count + 1);
+                    }
+                } else {
+                    ipLimitMap.put(ip, 1);
+                }
+            }
+        }
         if (shouldKeepAlive) {
             response.setHeader("Connection", "keep-alive");
         } else {
@@ -270,6 +245,10 @@ public class ConnectionManager {
             body.clearWriting();
 
             if (body.isEnd()) {
+                if (response.getBody().isBigFile()) {
+                    Integer count = ipLimitMap.get(getClientIp(ctx.client));
+                    ipLimitMap.put(getClientIp(ctx.client), count - 1);
+                }
                 finishOrKeepAlive(ctx, shouldKeepAlive, handler);
             }
             return;

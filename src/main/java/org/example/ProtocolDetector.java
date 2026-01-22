@@ -21,10 +21,10 @@ public class ProtocolDetector {
         for (byte b : HTTP2_PREFACE) {
             if (buf.get() != b) {
                 buf.reset();
-                return Protocol.HTTP1;
+                return Protocol.HTTP1_1;
             }
         }
 
-        return Protocol.HTTP2;
+        return Protocol.HTTP2_PLAINTEXT;
     }
 }

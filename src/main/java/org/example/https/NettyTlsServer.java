@@ -20,17 +20,20 @@ import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.CertificateException;
-import java.util.Arrays;
-import java.util.EnumSet;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 public class NettyTlsServer {
 
     private final int port;
     private final SslContext sslContext;
     private final Router router;
+    private final ThreadPoolExecutor executor = new ThreadPoolExecutor(
+            10, 10, 0L, TimeUnit.MILLISECONDS,
+            new LinkedBlockingQueue<Runnable>());
 
     public NettyTlsServer(int port, Router router) {
         this.port = port;
@@ -100,74 +103,75 @@ public class NettyTlsServer {
                                     }
                                 }
 
+                                // configureForHttp2
                                 private void configureForHttp2(ChannelHandlerContext ctx) {
                                     System.out.println("配置为HTTP/2协议处理");
-                                    Http2Manager http2Manager = new Http2Manager();
+                                    Http2Manager http2Manager = new Http2Manager(router);
+                                    Scheduler scheduler = new Scheduler();
 
-                                    // 简单处理：直接添加一个处理器来读取原始数据
                                     ctx.pipeline().addLast(new SimpleChannelInboundHandler<ByteBuf>() {
                                         private byte[] cumulation = new byte[0];
-                                        boolean sendPreface = false;
+                                        private boolean schedulerStarted = false;
+
                                         @Override
                                         protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) {
-                                            // 读取原始字节数据
                                             byte[] data = new byte[msg.readableBytes()];
                                             msg.readBytes(data);
 
-                                            ByteBuffer buffer = ByteBuffer.allocate(data.length + cumulation.length);
+                                            ByteBuffer buffer = ByteBuffer.allocate(cumulation.length + data.length);
                                             buffer.put(cumulation);
                                             buffer.put(data);
                                             cumulation = buffer.array();
 
-                                            // remove first 24 byte http2 prefence
-                                            if (cumulation.length >= 3) {
-                                                if (cumulation[0] == 'P'
-                                                        && cumulation[1] == 'R' && cumulation[2] == 'I') {
-                                                    if (cumulation.length >= 24) {
-                                                        byte[] temp = cumulation;
-                                                        cumulation = Arrays.copyOfRange(temp, 24, temp.length);
-                                                    }
-                                                }
-                                            } else {
+                                            if (cumulation.length >= 24 && cumulation[0] == 'P' && cumulation[1] == 'R') {
+                                                cumulation = Arrays.copyOfRange(cumulation, 24, cumulation.length);
+                                            } else if (cumulation.length < 3) {
                                                 return;
                                             }
 
-                                            ByteBuffer receivedBuf =  ByteBuffer.wrap(cumulation);
+                                            ByteBuffer receivedBuf = ByteBuffer.wrap(cumulation);
                                             boolean haveFrame = http2Manager.decodeAndHandle(receivedBuf);
-                                            if (!haveFrame) {
-                                                return;
-                                            }
+                                            if (!haveFrame) return;
 
-                                            BlockingQueue<ByteBuffer> controlResponse = http2Manager.getControlFrameQueue();
+                                            BlockingQueue<ByteBuffer> controlFrames = http2Manager.getControlFrameQueue();
                                             Map<Integer, Http2Stream> streams = http2Manager.getStreams();
 
-                                            // first send controlResponse
-                                            while (!controlResponse.isEmpty()) {
-                                                ByteBuffer frame = controlResponse.poll();
-                                                if (frame != null) {
-                                                    ByteBuf byteBuf = Unpooled.wrappedBuffer(frame);
-                                                    ChannelFuture future = ctx.writeAndFlush(byteBuf);
-                                                    try {
-                                                        future.sync(); // 等待此帧发送完成后再处理下一个
-                                                    } catch (InterruptedException e) {
-                                                        throw new RuntimeException(e);
+                                            // 1️⃣ 发送控制帧
+                                            ByteBuffer frame;
+                                            while ((frame = controlFrames.poll()) != null) {
+                                                ctx.write(Unpooled.wrappedBuffer(frame));
+                                            }
+                                            ctx.flush();
+
+                                            // 2️⃣ 发送 HEADERS
+                                            for (Http2Stream stream : streams.values()) {
+                                                Queue<Frame> tempDataFrames = new LinkedList<>();
+                                                while (!stream.getResponseQueue().isEmpty()) {
+                                                    Frame f = stream.getResponseQueue().poll();
+                                                    if (f.getHeader().FrameType == FrameType.HEADERS) {
+                                                        ctx.write(Unpooled.wrappedBuffer(f.toBytes()));
+                                                    } else {
+                                                        tempDataFrames.add(f);
+                                                    }
+                                                }
+                                                stream.getResponseQueue().addAll(tempDataFrames);
+                                            }
+                                            ctx.flush();
+
+                                            // 3️⃣ 将 DATA 放入 Scheduler
+                                            for (Http2Stream stream : streams.values()) {
+                                                while (!stream.getResponseQueue().isEmpty()) {
+                                                    Frame f = stream.getResponseQueue().poll();
+                                                    if (f.getHeader().FrameType == FrameType.DATA) {
+                                                        scheduler.addSchedulerUnit(f, stream.getStreamId());
                                                     }
                                                 }
                                             }
 
-                                            // send response
-                                            for (Map.Entry<Integer, Http2Stream> entry : streams.entrySet()) {
-                                                Http2Stream stream = entry.getValue();
-                                                while (!stream.getResponseQueue().isEmpty()) {
-                                                    Frame frame = stream.getResponseQueue().poll();
-                                                    ByteBuf byteBuf = Unpooled.wrappedBuffer(frame.toBytes());
-                                                    ChannelFuture future = ctx.writeAndFlush(byteBuf);
-                                                    try {
-                                                        future.sync(); // 等待此帧发送完成后再处理下一个
-                                                    } catch (InterruptedException e) {
-                                                        throw new RuntimeException(e);
-                                                    }
-                                                }
+                                            // 4️⃣ 启动 Scheduler（只启动一次）
+                                            if (!schedulerStarted) {
+                                                schedulerStarted = true;
+                                                scheduler.schedule(ctx);
                                             }
                                         }
 

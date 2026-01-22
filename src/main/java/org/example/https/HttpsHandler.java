@@ -20,6 +20,8 @@ import org.example.HttpVersion;
 import org.example.Router;
 import org.example.protocol.HttpRequestParser;
 
+import static org.example.protocol.HttpRequestParser.findHttpRequestEnd;
+
 public class HttpsHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final Router router;
     private ByteArrayOutputStream cumulation = new ByteArrayOutputStream();
@@ -57,13 +59,20 @@ public class HttpsHandler extends SimpleChannelInboundHandler<ByteBuf> {
             throw new RuntimeException(e);
         }
 
-        Router.RouteMatch match = router.findMatch(request.method, request.path);
+        Router.RouteMatchHttp1 match = router.findMatchHttp1(request.method, request.path);
+
         HttpResponse response = new HttpResponse();
         boolean keepAlive = true;
+
         if (match != null) {
             try {
-                response.setHttpVersion(request.protocol.startsWith("HTTP/1.1") ? HttpVersion.HTTP_1_1 : HttpVersion.HTTP_1_0);
-                keepAlive = request.headers.getOrDefault("connection", "").equalsIgnoreCase("keep-alive");
+                // 设置 HTTP 版本
+                response.setHttpVersion(request.protocol.getName().startsWith("HTTP/1.1")
+                        ? HttpVersion.HTTP_1_1
+                        : HttpVersion.HTTP_1_0);
+
+                // 处理 Connection 头
+                keepAlive = "keep-alive".equalsIgnoreCase(request.headers.getOrDefault("connection", ""));
                 if (!keepAlive) {
                     response.setHeader("Connection", "close");
                 } else {
@@ -71,6 +80,7 @@ public class HttpsHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 }
 
                 match.handler.handle(request, response, match.pathParams);
+
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }
@@ -90,61 +100,6 @@ public class HttpsHandler extends SimpleChannelInboundHandler<ByteBuf> {
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         cause.printStackTrace();
         ctx.close();
-    }
-
-    /**
-     * 找到完整 HTTP/1 请求结束位置（按 \r\n\r\n 或 Content-Length）
-     * 返回 -1 表示请求未完整
-     */
-    private int findHttpRequestEnd(ByteBuffer buf) {
-        int startPos = buf.position();
-        int limit = buf.limit();
-
-        // 简单方式：找 \r\n\r\n
-        for (int i = startPos; i < limit - 3; i++) {
-            if (buf.get(i) == '\r' && buf.get(i + 1) == '\n'
-                    && buf.get(i + 2) == '\r' && buf.get(i + 3) == '\n') {
-                // 包含 header 长度
-                int headersEnd = i + 4;
-
-                // 检查是否有 Content-Length
-                int contentLength = getContentLength(buf, startPos, headersEnd);
-                if (contentLength > 0) {
-                    // 确保 body 也完整
-                    if (limit - headersEnd >= contentLength) {
-                        return headersEnd + contentLength - startPos;
-                    } else {
-                        return -1; // body 未完整
-                    }
-                } else {
-                    // 无 body，完整请求
-                    return headersEnd - startPos;
-                }
-            }
-        }
-
-        return -1; // header 未完整
-    }
-
-    /**
-     * 从 buffer 的 [start, end) 区间解析 Content-Length
-     */
-    private int getContentLength(ByteBuffer buf, int start, int end) {
-        byte[] headerBytes = new byte[end - start];
-        int oldPos = buf.position();
-        buf.position(start);
-        buf.get(headerBytes);
-        buf.position(oldPos);
-
-        String headers = new String(headerBytes);
-        for (String line : headers.split("\r\n")) {
-            if (line.toLowerCase().startsWith("content-length:")) {
-                try {
-                    return Integer.parseInt(line.split(":")[1].trim());
-                } catch (NumberFormatException ignored) {}
-            }
-        }
-        return 0;
     }
 }
 

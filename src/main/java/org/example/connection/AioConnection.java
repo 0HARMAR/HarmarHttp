@@ -3,31 +3,58 @@ package org.example.connection;
 import java.nio.ByteBuffer;
 import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.channels.CompletionHandler;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class AioConnection implements Connection{
     private final AsynchronousSocketChannel client;
     private ReadHandler readHandler;
     private final ByteBuffer readBuffer = ByteBuffer.allocate(8192);
+    BlockingQueue<ByteBuffer> controlFrameQueue = new LinkedBlockingQueue<>();
+    BlockingQueue<ByteBuffer> streamsQueue = new LinkedBlockingQueue<>();
+    private AtomicBoolean writting = new AtomicBoolean(false);
 
     public AioConnection(AsynchronousSocketChannel client) {
         this.client = client;
     }
 
     @Override
-    public void write(ByteBuffer buffer) {
-        client.write(buffer, null, new CompletionHandler<>() {
+    public void write() {
+        if (!writting.compareAndSet(false, true)) {
+            return;
+        }
+        doWrite();
+    }
 
+    private void doWrite() {
+        ByteBuffer buffer = controlFrameQueue.poll();
+        if (buffer == null) {
+            buffer = streamsQueue.poll();
+        }
+
+        if (buffer == null) {
+            writting.set(false);
+            return;
+        }
+
+        client.write(buffer, buffer, new CompletionHandler<Integer, ByteBuffer>() {
             @Override
-            public void completed(Integer result, Object attachment) {
-
+            public void completed(Integer result, ByteBuffer buf) {
+                if (buf.hasRemaining()) {
+                    client.write(buf, null, this);
+                } else {
+                    doWrite(); // 🚀 写下一个
+                }
             }
 
             @Override
-            public void failed(Throwable exc, Object attachment) {
+            public void failed(Throwable exc, ByteBuffer attachment) {
                 close();
             }
         });
     }
+
 
     @Override
     public void onRead(ReadHandler handler) {
@@ -61,5 +88,13 @@ public class AioConnection implements Connection{
         try {
             client.close();
         } catch (Exception ignored){}
+    }
+
+    public BlockingQueue<ByteBuffer> getControlFrameQueue() {
+        return controlFrameQueue;
+    }
+
+    public BlockingQueue<ByteBuffer> getStreamsQueue() {
+        return streamsQueue;
     }
 }

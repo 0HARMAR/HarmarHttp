@@ -16,7 +16,7 @@ public class MonitorEndpoints {
 
     public void registerEndPoints(HarmarHttpServer server) {
         // health check point
-        server.registerRoute("GET", "/health", ((request, response, pathParams) -> {
+        server.registerRouteHttp1("GET", "/health", (request, response, pathParams) -> {
             MonitorData data = monitor.getMonitorData();
             boolean isHealthy = data.getErrorRate() < 5.0 && data.currentConnections < 100;
 
@@ -29,70 +29,61 @@ public class MonitorEndpoints {
 
             response.setStatus(isHealthy ?  HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE);
             response.setDefaultHeaders();
-            response.setHeader( "Content-Type", "application/json");
+            response.setHeader("Content-Type", "application/json");
             response.setHeader("Content-Length", String.valueOf(json.length()));
 
             ResponseBody body = new ResponseBody();
             body.addChunk(json.getBytes(StandardCharsets.UTF_8));
             body.end();
             response.setBody(body);
-        }));
+        });
 
         // performance index
-        server.registerRoute("GET", "/metrics", ((request, response, pathParams) -> {
+        server.registerRouteHttp1("GET", "/metrics", (request, response, pathParams) -> {
             MonitorData data = monitor.getMonitorData();
             response.setStatus(HttpStatus.OK);
             response.setDefaultHeaders();
-            response.setHeader( "Content-Type", "application/json");
-            response.setHeader( "Content-Length", String.valueOf(data.toJson().length()));
+            response.setHeader("Content-Type", "application/json");
+            response.setHeader("Content-Length", String.valueOf(data.toJson().length()));
 
             ResponseBody  body = new ResponseBody();
             body.addChunk(data.toJson().getBytes(StandardCharsets.UTF_8));
             body.end();
             response.setBody(body);
-        }));
+        });
 
         // simple count index
-        server.registerRoute("GET", "/stats", ((request, response, pathParams) -> {
+        server.registerRouteHttp1("GET", "/stats", (request, response, pathParams) -> {
             MonitorData data = monitor.getMonitorData();
             String html = generateStatsHtml(data);
 
             response.setStatus(HttpStatus.OK);
             response.setDefaultHeaders();
             response.setHeader("Content-Type", "text/html; charset=UTF-8");
-            response.setHeader(
-                    "Content-Length",
-                    String.valueOf(html.getBytes(StandardCharsets.UTF_8).length)
-            );
+            response.setHeader("Content-Length", String.valueOf(html.getBytes(StandardCharsets.UTF_8).length));
 
             ResponseBody body = new ResponseBody();
             body.addChunk(html.getBytes(StandardCharsets.UTF_8));
             body.end();
-
             response.setBody(body);
-
-        }));
+        });
 
         // reset count index
-        server.registerRoute("POST", "/reset", ((request, response, pathParams) -> {
+        server.registerRouteHttp1("POST", "/reset", (request, response, pathParams) -> {
             monitor.reset();
             String json = "{\"message\":\"Statistics reset successfully\"}";
 
             response.setStatus(HttpStatus.OK);
             response.setDefaultHeaders();
             response.setHeader("Content-Type", "application/json; charset=UTF-8");
-            response.setHeader(
-                    "Content-Length",
-                    String.valueOf(json.getBytes(StandardCharsets.UTF_8).length)
-            );
+            response.setHeader("Content-Length", String.valueOf(json.getBytes(StandardCharsets.UTF_8).length));
 
             ResponseBody body = new ResponseBody();
             body.addChunk(json.getBytes(StandardCharsets.UTF_8));
             body.end();
-
             response.setBody(body);
+        });
 
-        }));
     }
 
     private String generateStatsHtml(MonitorData data) {

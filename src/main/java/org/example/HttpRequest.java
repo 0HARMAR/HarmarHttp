@@ -9,7 +9,7 @@ import java.util.Map;
 public class  HttpRequest {
     public String method;
     public String path;
-    public String protocol;
+    public Protocol protocol;
     public Map<String, String> headers = new LinkedHashMap<>();
     public boolean hasBody;
     byte[] body;

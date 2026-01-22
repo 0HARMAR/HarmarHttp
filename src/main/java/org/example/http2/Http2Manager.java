@@ -1,5 +1,9 @@
 package org.example.http2;
 
+import org.example.HttpRequest;
+import org.example.Protocol;
+import org.example.Router;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -17,8 +21,9 @@ public class Http2Manager {
     private final ByteBuffer readBuffer = ByteBuffer.allocate(8192);
     private HpackDynamicTable hpackDynamicTable = new HpackDynamicTable(4096);
     private final FrameDecoder decoder = new FrameDecoder();
+    private final Router router;
 
-    public Http2Manager() {
+    public Http2Manager(Router router) {
         // 默认设置
         Frame settings = new Frame(new FrameHeader(0, FrameType.SETTINGS, null, 0), null);
         ByteBuffer buf = ByteBuffer.allocate(9); // fix 9 bytes frame header, no payload
@@ -29,6 +34,8 @@ public class Http2Manager {
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
+
+        this.router = router;
     }
 
     public boolean decodeAndHandle(ByteBuffer readBuffer) {
@@ -92,24 +99,19 @@ public class Http2Manager {
             System.out.println("  " + key + ": " + value);
         }
 
-        // 构造响应帧
-        Map<String, String> responseHeaders = new LinkedHashMap<>();
-        responseHeaders.put(":status", "200");
-        responseHeaders.put("server", "mini-http2");
+        HttpRequest request = new HttpRequest();
+        request.method = headers.get(":method");
+        request.path = headers.get(":path");
+        request.protocol = Protocol.HTTP2_OVER_TLS;
 
-        byte[] headersPayload = new HpackEncoder(hpackDynamicTable).encode(responseHeaders);
-
-        Frame headersFrame = new Frame(new FrameHeader(
-                headersPayload.length, FrameType.HEADERS, EnumSet.of(FrameFlag.END_HEADERS), streamId
-        ), headersPayload);
-
-        Frame dataFrame = new Frame(new FrameHeader(
-                "Hello, World!".getBytes(StandardCharsets.UTF_8).length, FrameType.DATA, EnumSet.of(FrameFlag.END_STREAM), streamId
-        ), "Hello, World!".getBytes(StandardCharsets.UTF_8));
-
-        // 放入响应队列，由 Stream 状态机控制顺序
-        stream.queueResponse(headersFrame);
-        stream.queueResponse(dataFrame);
+        Router.RouteMatchHttp2 match = router.findMatchHttp2(headers.get(":method"), headers.get(":path"));
+        if (match != null) {
+            try {
+                match.handler.handle(request, stream.getResponseQueue(), match.pathParams, hpackDynamicTable, streamId);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
     }
 
     /**

@@ -21,10 +21,13 @@ import java.util.Map;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
+import org.example.http2.HpackDynamicTable;
 import org.example.https.NettyTlsServer;
 import org.example.monitor.MonitorEndpoints;
 import org.example.monitor.PerformanceMonitor;
 import org.example.security.DosDefender;
+
+import static org.example.protocol.HttpRequestParser.parseRequest;
 
 public class HarmarHttpServer {
     // monitor fields
@@ -42,14 +45,14 @@ public class HarmarHttpServer {
     private final NettyTlsServer nettyTlsServer; // HTTPS
 
     public HarmarHttpServer(int port, String rootDir) throws IOException {
-        this(port, rootDir,true, true);
+        this(port, rootDir,true, true, true);
     }
 
-    public HarmarHttpServer(int port, String rootDir,boolean enableDosDefender, boolean enableMonitoring) throws IOException {
+    public HarmarHttpServer(int port, String rootDir,boolean enableDosDefender, boolean enableMonitoring, boolean enableFileCache) throws IOException {
         this.port = port;
         this.rootDir = rootDir;
         // config 100 file and 100M limit
-        this.fileCache = new FileCacheManager(100,Paths.get("src/main/resources/example"));
+        this.fileCache = enableFileCache ? new FileCacheManager(Paths.get(rootDir)) : null;
 
         this.dosDefender = enableDosDefender ?
                 new DosDefender(60_000, 100, 300_000) : null;
@@ -67,7 +70,7 @@ public class HarmarHttpServer {
         // http default 80 port
         this.connectionManager = new ConnectionManager(this, 80, 10,
                 enableDosDefender ? performanceMonitor : null,
-                enableDosDefender ? dosDefender : null);
+                enableDosDefender ? dosDefender : null, router);
 
         this.nettyTlsServer = new NettyTlsServer(port,router);
 
@@ -119,8 +122,12 @@ public class HarmarHttpServer {
         }
     }
 
-    public void registerRoute(String method, String path, Router.RouteHandler handler) {
-        router.register(method,path, handler);
+    public void registerRouteHttp1(String method, String path, Router.Http1RouteHandler handler) {
+        router.registerHttp1(method, path, handler);
+    }
+
+    public void registerRouteHttp2(String method, String path, Router.Http2RouteHandler handler) {
+        router.registerHttp2(method, path, handler);
     }
 
     public void start() throws IOException {
@@ -163,34 +170,15 @@ public class HarmarHttpServer {
         }
     }
 
-    private HttpRequest parseRequest(BufferedReader reader) throws IOException {
-        String requestLine = reader.readLine();
-        if (requestLine == null || requestLine.isEmpty()) {return null;}
-
-        String[] parts = requestLine.split("\\s+");
-        if (parts.length < 2) {return null;}
-
-        HttpRequest request = new HttpRequest();
-        request.method = parts[0];
-        request.path =  parts[1];
-        request.protocol = parts.length > 2 ? parts[2] : "HTTP/1.0";
-
-        request.headers = HttpHeaderParser.parseHeaders(reader);
-        if ("POST".equalsIgnoreCase(request.method)) {
-            request.hasBody = true;
-        }
-
-        // TODO parse request body
-        return request;
-    }
-
     private HttpResponse respondToRequest(HttpRequest request) throws IOException {
         // 1. check http version
-        HttpVersion version = request.protocol.startsWith("HTTP/1.1") ? HttpVersion.HTTP_1_1 : HttpVersion.HTTP_1_0;
+        HttpVersion version = request.protocol.getName().startsWith("HTTP/1.0") ? HttpVersion.HTTP_1_0 : HttpVersion.HTTP_1_1;
         // 2. try to match route
-        Router.RouteMatch match = router.findMatch(request.method, request.path);
+        Router.RouteMatchHttp1 match = router.findMatchHttp1(request.method, request.path);
+
         HttpResponse response = new HttpResponse();
         response.setHttpVersion(version);
+
         if (match != null) {
             match.handler.handle(request, response, match.pathParams);
             return response;
@@ -253,45 +241,18 @@ public class HarmarHttpServer {
         }
 
         if (Files.exists(requestPath) && !Files.isDirectory(requestPath)) {
-            String fileKey = requestPath.toString();
-
-            // check cache
-            FileCacheManager.CacheEntity cached = fileCache.get(fileKey);
-            if (cached != null) {
-                response.setStatus(HttpStatus.OK);
+                byte[] content = Files.readAllBytes(normalizePath(rootPath, String.valueOf(requestPath)));
+                String contentType = determineContentType(requestPath);
 
                 ResponseBody body = new ResponseBody();
-                body.addChunk(cached.content);
+                body.addChunk(content);
                 body.end();
                 response.setBody(body);
-
+                response.setStatus(HttpStatus.OK);
                 response.setDefaultHeaders();
-                response.setHeader("Content-Type", cached.contentType);
-                response.setHeader("Content-Length", String.valueOf(cached.content.length));
-
+                response.setHeader("Content-Type", contentType);
+                response.setHeader("Content-Length", String.valueOf(content.length));
                 response.send();
-                return;
-            }
-
-            // cache not hit
-            byte[] content = Files.readAllBytes(normalizePath(rootPath, String.valueOf(requestPath)));
-            String contentType = determineContentType(requestPath);
-            long lastModified = Files.getLastModifiedTime(requestPath).toMillis();
-
-            // update cache
-            String canonicalPath = requestPath.toRealPath().toString();
-            fileCache.put(fileKey,
-                    new FileCacheManager.CacheEntity(content,contentType,lastModified, canonicalPath));
-
-            ResponseBody body = new ResponseBody();
-            body.addChunk(content);
-            body.end();
-            response.setBody(body);
-            response.setStatus(HttpStatus.OK);
-            response.setDefaultHeaders();
-            response.setHeader("Content-Type", contentType);
-            response.setHeader("Content-Length", String.valueOf(content.length));
-            response.send();
         } else {
             byte[] errorContent = buildErrorHtml(HttpStatus.NOT_FOUND.code, HttpStatus.NOT_FOUND.message);
             ResponseBody body = new ResponseBody();
