@@ -2,6 +2,7 @@ package org.example;
 
 import org.example.http2.Frame;
 import org.example.http2.HpackDynamicTable;
+import org.example.http2.Http2Stream;
 
 import java.io.IOException;
 import java.util.*;
@@ -26,7 +27,7 @@ public class Router {
     }
 
     public interface Http2RouteHandler {
-        void handle(HttpRequest request, BlockingQueue<Frame> responseQueues, Map<String,String> pathParams,
+        void handle(HttpRequest request, Http2Stream stream, Map<String,String> pathParams,
                     HpackDynamicTable hpackDynamicTable, int streamId) throws IOException;
     }
 

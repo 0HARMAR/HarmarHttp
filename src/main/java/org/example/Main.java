@@ -38,7 +38,7 @@ public class Main {
                 response.setBody(body);
             });
 
-            harmarHttpServer.registerRouteHttp2("GET", "/api/http2", (request, response, pathParams,
+            harmarHttpServer.registerRouteHttp2("GET", "/api/http2", (request, stream, pathParams,
                                                                       hpackDynamicTable, streamId) -> {
                 Map<String, String> responseHeaders = new LinkedHashMap<>();
                 responseHeaders.put(":status", "200");
@@ -54,38 +54,16 @@ public class Main {
                         "Hello, World!".getBytes(StandardCharsets.UTF_8).length, FrameType.DATA, EnumSet.of(FrameFlag.END_STREAM), streamId
                 ), "Hello, World!".getBytes(StandardCharsets.UTF_8));
 
-                response.add(headersFrame);
-                response.add(dataFrame);
+                stream.queueResponse(headersFrame);
+                stream.queueResponse(dataFrame);
             });
 
-            harmarHttpServer.registerRouteHttp2("GET", "/api/big-file", (request, response, pathParams,
-                                                                         hpackDynamicTable, streamId) -> {
-                Map<String, String> responseHeaders = new LinkedHashMap<>();
-                responseHeaders.put(":status", "200");
-                responseHeaders.put("server", "mini-http2");
-                responseHeaders.put("content-type", "image/jpeg");
-
-                byte[] headersPayload = new HpackEncoder(hpackDynamicTable).encode(responseHeaders);
-
-                Frame headersFrame = new Frame(new FrameHeader(
-                        headersPayload.length, FrameType.HEADERS, EnumSet.of(FrameFlag.END_HEADERS), streamId
-                ), headersPayload);
-
-                File file = new File("C:\\Users\\hemin\\IdeaProjects\\HarmarHttp\\src\\main\\resources\\example\\nijika.jpg");
-
-                try {
-                    byte[] fileBytes = java.nio.file.Files.readAllBytes(file.toPath());
-
-                    Frame dataFrame = new Frame(new FrameHeader(
-                            fileBytes.length, FrameType.DATA, EnumSet.of(FrameFlag.END_STREAM), streamId
-                    ), fileBytes);
-
-                    response.add(headersFrame);
-                    response.add(dataFrame);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            });
+            harmarHttpServer.registerHttp2StaticFile("/nijika.jpg");
+            harmarHttpServer.registerHttp2StaticFile("/test_pic1.jpg");
+            harmarHttpServer.registerHttp2StaticFile("/test_pic2.jpg");
+            harmarHttpServer.registerHttp2StaticFile("/test_pic3.jpg");
+            harmarHttpServer.registerHttp2StaticFile("/test_pic4.jpg");
+            harmarHttpServer.registerHttp2StaticFile("/big_file.zip");
 
             ResponseBody chunkedBody = new ResponseBody();
             // 创建定时任务

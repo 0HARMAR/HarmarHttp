@@ -108,13 +108,15 @@ public class NettyTlsServer {
                                     System.out.println("配置为HTTP/2协议处理");
                                     Http2Manager http2Manager = new Http2Manager(router);
                                     Scheduler scheduler = new Scheduler();
+                                    boolean enableSchedule = false;
 
                                     ctx.pipeline().addLast(new SimpleChannelInboundHandler<ByteBuf>() {
                                         private byte[] cumulation = new byte[0];
-                                        private boolean schedulerStarted = false;
 
                                         @Override
                                         protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) {
+                                            scheduler.setCtx(ctx);
+
                                             byte[] data = new byte[msg.readableBytes()];
                                             msg.readBytes(data);
 
@@ -139,6 +141,10 @@ public class NettyTlsServer {
                                             // 1️⃣ 发送控制帧
                                             ByteBuffer frame;
                                             while ((frame = controlFrames.poll()) != null) {
+                                                if (frame.array()[3] == FrameType.GOAWAY.getTypeCode()) {
+                                                    ctx.writeAndFlush(Unpooled.wrappedBuffer(frame));
+                                                    ctx.close();
+                                                }
                                                 ctx.write(Unpooled.wrappedBuffer(frame));
                                             }
                                             ctx.flush();
@@ -149,6 +155,7 @@ public class NettyTlsServer {
                                                 while (!stream.getResponseQueue().isEmpty()) {
                                                     Frame f = stream.getResponseQueue().poll();
                                                     if (f.getHeader().FrameType == FrameType.HEADERS) {
+                                                        System.out.println("发送 HEADERS" + f.toString());
                                                         ctx.write(Unpooled.wrappedBuffer(f.toBytes()));
                                                     } else {
                                                         tempDataFrames.add(f);
@@ -163,15 +170,13 @@ public class NettyTlsServer {
                                                 while (!stream.getResponseQueue().isEmpty()) {
                                                     Frame f = stream.getResponseQueue().poll();
                                                     if (f.getHeader().FrameType == FrameType.DATA) {
-                                                        scheduler.addSchedulerUnit(f, stream.getStreamId());
+                                                        if (enableSchedule) {
+                                                            scheduler.addSchedulerUnit(f, stream.getStreamId());
+                                                        } else {
+                                                            ctx.writeAndFlush(Unpooled.wrappedBuffer(f.toBytes()));
+                                                        }
                                                     }
                                                 }
-                                            }
-
-                                            // 4️⃣ 启动 Scheduler（只启动一次）
-                                            if (!schedulerStarted) {
-                                                schedulerStarted = true;
-                                                scheduler.schedule(ctx);
                                             }
                                         }
 

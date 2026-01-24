@@ -1,6 +1,5 @@
 package org.example.protocol;
 
-import org.example.HttpHeaderParser;
 import org.example.HttpRequest;
 import org.example.HttpVersion;
 import org.example.Protocol;
@@ -8,6 +7,10 @@ import org.example.Protocol;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Locale;
+import java.util.Map;
 
 public class HttpRequestParser {
 
@@ -23,7 +26,7 @@ public class HttpRequestParser {
         request.path =  parts[1];
         request.protocol = parts[2].startsWith("HTTP1.1") ? Protocol.HTTP1_1 : Protocol.HTTP1_0;
 
-        request.headers = HttpHeaderParser.parseHeaders(reader);
+        request.headers = parseHeaders(reader);
         if ("POST".equalsIgnoreCase(request.method)) {
             request.hasBody = true;
         }
@@ -96,6 +99,68 @@ public class HttpRequestParser {
             return HttpVersion.HTTP_1_0;
         } else {
             return HttpVersion.HTTP_1_1;
+        }
+    }
+
+    public static Map<String, String> parseHeaders(BufferedReader reader) throws IOException {
+        Map<String, String> headers = new LinkedHashMap<>();
+        String line;
+        StringBuilder foldedValue = null;
+        String currentKey = null;
+
+        while((line = reader.readLine()) != null) {
+            // http ended with empty line
+            if (line.isEmpty()) {
+                break;
+            }
+
+            // process line breaking(RFC 822)
+            if ((line.startsWith(" ") || line.startsWith("\t")) && currentKey != null) {
+                if (foldedValue == null) {
+                    foldedValue = new StringBuilder(headers.get(currentKey));
+                }
+                foldedValue.append(" ").append(line.trim());
+                continue;
+            }
+
+            if (foldedValue != null) {
+                headers.put(currentKey, foldedValue.toString());
+                foldedValue = null;
+            }
+
+            int colonIndex = line.indexOf(':');
+            if (colonIndex == -1) {
+                continue;
+            }
+
+            currentKey = line.substring(0, colonIndex).trim().toLowerCase(Locale.US);
+            String value = line.substring(colonIndex + 1).trim();
+
+            if ("host".equals(currentKey) && !headers.containsKey("host")) {
+                // remove port(if exist)
+                int portIndex = value.indexOf(':');
+                if (portIndex != -1) {
+                    value = value.substring(0, portIndex);
+                }
+            }
+
+            headers.put(currentKey, value);
+        }
+
+        if (foldedValue != null) {
+            headers.put(currentKey, foldedValue.toString());
+        }
+
+        if (!headers.containsKey("host")) {
+            throw new InvalidHttpHeaderException("Missing required Host header");
+        }
+
+        return Collections.unmodifiableMap(headers);
+    }
+
+    static class InvalidHttpHeaderException extends RuntimeException {
+        public InvalidHttpHeaderException(String message) {
+            super(message);
         }
     }
 }

@@ -128,10 +128,16 @@ public class HpackDecoder {
 
             if ((firstByte & 0x80) != 0) { // Indexed Header Field
                 int index = decodeInteger(in, 7, firstByte);
-                if (index < 1 || index > STATIC_TABLE.length) throw new IOException("Invalid static table index: " + index);
-                String name = STATIC_TABLE[index - 1][0];
-                String value = STATIC_TABLE[index - 1][1];
-                headers.put(name, value);
+                if (index >= 1 && index <= STATIC_TABLE.length - 1) { // in static table
+                    String name = STATIC_TABLE[index - 1][0];
+                    String value = STATIC_TABLE[index - 1][1];
+                    headers.put(name, value);
+                } else if (index >= 1 && index <= hpackDynamicTable.getCurrentIndex()) { // in dynamic table
+                    HpackDynamicEntry entry = hpackDynamicTable.getEntry(index - STATIC_TABLE.length - 1);
+                    headers.put(entry.getName(), entry.getValue());
+                } else {
+                    throw new IOException("Invalid index: " + index);
+                }
             } else if ((firstByte & 0xF0) == 0x00) { // Literal Header Field without indexing
                 // ---- 1️⃣ 解析 name ----
                 String name;

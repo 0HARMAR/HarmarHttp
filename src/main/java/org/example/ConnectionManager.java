@@ -26,7 +26,6 @@ import static org.example.protocol.HttpRequestParser.justifyHttpVersion;
 
 public class ConnectionManager {
     private final AsynchronousServerSocketChannel serverChannel;
-    private final ExecutorService workerPool;
     private final HarmarHttpServer server;
     private PerformanceMonitor performanceMonitor = null;
     private DosDefender dosDefender = null;
@@ -37,7 +36,6 @@ public class ConnectionManager {
     public ConnectionManager(HarmarHttpServer server, int port, int workerThreads,
                              PerformanceMonitor performanceMonitor, DosDefender dosDefender, Router router) throws IOException {
         this.server = server;
-        this.workerPool = Executors.newFixedThreadPool(workerThreads);
         this.serverChannel = AsynchronousServerSocketChannel.open().bind(
                 new InetSocketAddress(port)
         );
@@ -320,7 +318,6 @@ public class ConnectionManager {
     }
 
     public void shutdown() {
-        workerPool.shutdown();
         try {
             if (serverChannel != null && serverChannel.isOpen()) {
                 serverChannel.close();

@@ -17,7 +17,7 @@ public class HpackDynamicTable {
 
     // 添加新条目（可能会触发淘汰旧条目）
     public void addEntry(String name, String value) {
-        HpackDynamicEntry entry = new HpackDynamicEntry(name, value, currentIndex + 1);
+        HpackDynamicEntry entry = new HpackDynamicEntry(name, value, ++currentIndex);
         // 淘汰直到能放下
         while (!entries.isEmpty() && (currentSize + entry.getSize() > maxSize)) {
             HpackDynamicEntry removed = entries.removeLast();
@@ -31,11 +31,11 @@ public class HpackDynamicTable {
     }
 
     public HpackDynamicEntry getEntry(int index) {
-        // 动态表索引从 1 开始，按 RFC 7541：1 = 最近加入的条目
-        if (index < 1 || index > entries.size()) {
+        if (index > entries.size()) {
+            System.out.println("Index out of range: " + index);
             return null;
         }
-        return ((LinkedList<HpackDynamicEntry>) entries).get(index - 1);
+        return ((LinkedList<HpackDynamicEntry>) entries).get(index);
     }
 
     public HpackDynamicEntry name(String name) {
@@ -49,6 +49,10 @@ public class HpackDynamicTable {
 
     public int getCurrentSize() {
         return currentSize;
+    }
+
+    public int getCurrentIndex() {
+        return currentIndex;
     }
 
     public int getMaxSize() {

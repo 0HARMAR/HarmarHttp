@@ -19,9 +19,10 @@ public class Http2Manager {
     private BlockingQueue<ByteBuffer> controlFrameQueue = new LinkedBlockingQueue<>();
     private final Map<Integer, Http2Stream> streams = new ConcurrentHashMap<>();
     private final ByteBuffer readBuffer = ByteBuffer.allocate(8192);
-    private HpackDynamicTable hpackDynamicTable = new HpackDynamicTable(4096);
+    private HpackDynamicTable hpackDynamicTable = new HpackDynamicTable(4 * 1024 * 1024);
     private final FrameDecoder decoder = new FrameDecoder();
     private final Router router;
+    private int lastClientStreamId = 0;
 
     public Http2Manager(Router router) {
         // 默认设置
@@ -54,9 +55,17 @@ public class Http2Manager {
                 case SETTINGS -> handleSettings(frame);
 
                 case HEADERS -> {
-                    Http2Stream stream = streams.computeIfAbsent(frame.header.StreamID, Http2Stream::new);
-                    stream.onRecvFrame(frame);
-                    handleHeaders(frame);
+                    try {
+                        if (frame.header.StreamID % 2 == 0) throw new Http2ProtocolException("Invalid stream id");
+                        Http2Stream stream = streams.computeIfAbsent(frame.header.StreamID, Http2Stream::new);
+                        stream.onRecvFrame(frame);
+                        lastClientStreamId = frame.header.StreamID;
+                        handleHeaders(frame);
+                    } catch (Http2ProtocolException e) {
+                        System.err.println(e.getMessage());
+//                        sendGoAway();
+                        sendRST_STREAM(frame.header.StreamID, ErrorCode.PROTOCOL_ERROR);
+                    }
                 }
                 case DATA, RST_STREAM -> {
                     // 找已有 stream 或新建
@@ -76,6 +85,32 @@ public class Http2Manager {
             }
         }
         return true;
+    }
+
+    private void sendRST_STREAM(int streamID, ErrorCode errorCode) {
+        Frame rstStream = new Frame(new FrameHeader(0, FrameType.RST_STREAM, null, streamID), null);
+        byte[] errorCodeBytes = ByteBuffer.allocate(4).putInt(errorCode.getCode()).array();
+        rstStream.payload = errorCodeBytes;
+
+        controlFrameQueue.add(ByteBuffer.wrap(rstStream.toBytes()));
+        streams.remove(streamID);
+    }
+
+    private void sendGoAway() {
+        Frame goAway = new Frame(new FrameHeader(0, FrameType.GOAWAY, null, 0), null);
+        byte[] lastClientStreamIdBytes = new byte[4];
+        ByteBuffer.wrap(lastClientStreamIdBytes).putInt(lastClientStreamId);
+        ErrorCode errorCode = ErrorCode.PROTOCOL_ERROR;
+        byte[] errorCodeBytes = ByteBuffer.allocate(4).putInt(errorCode.getCode()).array();
+        byte[] payload = new byte[lastClientStreamIdBytes.length + errorCodeBytes.length];
+        System.arraycopy(lastClientStreamIdBytes, 0, payload, 0, lastClientStreamIdBytes.length);
+        System.arraycopy(errorCodeBytes, 0, payload, lastClientStreamIdBytes.length, errorCodeBytes.length);
+        goAway.payload = payload;
+
+        controlFrameQueue.clear();
+        controlFrameQueue.add(ByteBuffer.wrap(goAway.toBytes()));
+
+        streams.clear();
     }
 
     private void handleHeaders(Frame frame) {
@@ -107,7 +142,7 @@ public class Http2Manager {
         Router.RouteMatchHttp2 match = router.findMatchHttp2(headers.get(":method"), headers.get(":path"));
         if (match != null) {
             try {
-                match.handler.handle(request, stream.getResponseQueue(), match.pathParams, hpackDynamicTable, streamId);
+                match.handler.handle(request, stream, match.pathParams, hpackDynamicTable, streamId);
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }

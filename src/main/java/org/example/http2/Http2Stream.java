@@ -33,7 +33,7 @@ public class Http2Stream {
     // ------------------- 接收帧事件 -------------------
     public synchronized void onRecvFrame(Frame frame) {
         if (state == StreamState.CLOSED) {
-            System.out.println("⚠️ Stream " + streamId + " is closed, can't receive frame");
+//            throw new Http2ProtocolException("Stream " + streamId + " is closed");
             return;
         }
 
@@ -49,7 +49,8 @@ public class Http2Stream {
         switch (state) {
             case IDLE -> state = StreamState.OPEN;
             case OPEN, HALF_CLOSED_LOCAL -> {} // 可能是 CONTINUATION
-            default -> protocolError();
+//            default -> protocolError();
+            default ->  {return;}
         }
 
         requestFrames.offer(frame);
@@ -64,7 +65,8 @@ public class Http2Stream {
     private void handleRecvData(Frame frame) {
         switch (state) {
             case OPEN, HALF_CLOSED_LOCAL -> requestFrames.offer(frame);
-            default -> protocolError();
+//            default -> protocolError();
+            default -> {return;}
         }
 
         if (frame.getHeader().FrameFlags.contains(FrameFlag.END_STREAM)) {
@@ -80,10 +82,9 @@ public class Http2Stream {
     }
 
     private void protocolError() {
-        System.err.println("⚠️ Protocol error on stream " + streamId);
-        state = StreamState.CLOSED;
-        requestFrames.clear();
-        responseFrames.clear();
+        throw new Http2ProtocolException(
+                "Protocol error on stream " + streamId + ", state=" + state
+        );
     }
 
     // ------------------- 状态查询 -------------------
@@ -105,7 +106,8 @@ public class Http2Stream {
 
     public synchronized void queueResponse(Frame frame) {
         if (state == StreamState.CLOSED) {
-            System.out.println("⚠️ Stream " + streamId + " is closed, can't queue response");
+//            throw new Http2ProtocolException("Stream " + streamId + " is closed");
+            return;
         }
         // 放入响应队列
         responseFrames.offer(frame);

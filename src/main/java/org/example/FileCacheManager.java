@@ -25,20 +25,6 @@ public class FileCacheManager {
         watchThread.start();
     }
 
-    public static class CacheEntity {
-        public final byte[] content;
-        public final String contentType;
-        public final long lastModified;
-        public final String filePath;
-
-        public CacheEntity(byte[] content,String contentType,long lastModified, String filePath) {
-            this.content = content;
-            this.contentType = contentType;
-            this.lastModified = lastModified;
-            this.filePath = filePath;
-        }
-    }
-
     /* ================= hot reload ================ */
     private void watchLoop() {
         try {

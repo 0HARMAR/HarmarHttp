@@ -1,13 +1,6 @@
 package org.example;
 
-import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.io.StringReader;
-import java.io.StringWriter;
+import java.io.*;
 import java.net.Socket;
 import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.charset.StandardCharsets;
@@ -16,12 +9,14 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.cert.CertificateException;
 import java.util.Date;
+import java.util.EnumSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
-import org.example.http2.HpackDynamicTable;
+import org.example.http2.*;
 import org.example.https.NettyTlsServer;
 import org.example.monitor.MonitorEndpoints;
 import org.example.monitor.PerformanceMonitor;
@@ -74,48 +69,6 @@ public class HarmarHttpServer {
 
         this.nettyTlsServer = new NettyTlsServer(port,router);
 
-        registerBuildInRoutes();
-    }
-
-    private void registerBuildInRoutes() {
-        router.get("/api/time", (request, response, pathParams) -> {
-            byte[] content = ("{ \"serverTime\": \"" + new Date() + "\" }")
-                    .getBytes(StandardCharsets.UTF_8);
-
-            ResponseBody body = new ResponseBody();
-            body.addChunk(content);
-            body.end();
-
-            response.setStatus(HttpStatus.OK);
-            response.setBody(body);
-            response.setDefaultHeaders();
-            response.setHeader("Content-Type", "application/json");
-            response.setHeader("Content-Length", String.valueOf(content.length));
-
-            response.send();
-        });
-
-
-        router.get("/api/user/{id}", (request, response, pathParams) -> {
-            String userId = pathParams.get("id");
-            byte[] content = (
-                    "{ \"userId\": \"" + userId + "\", \"name\": \"User" + userId + "\" }"
-            ).getBytes(StandardCharsets.UTF_8);
-
-            ResponseBody body = new ResponseBody();
-            body.addChunk(content);
-            body.end();
-
-            response.setStatus(HttpStatus.OK);
-            response.setBody(body);
-            response.setDefaultHeaders();
-            response.setHeader("Content-Type", "application/json");
-            response.setHeader("Content-Length", String.valueOf(content.length));
-
-            response.send();
-        });
-
-
         // register monitor endpoint
         if (enableMonitoring && monitorEndpoints != null) {
             monitorEndpoints.registerEndPoints(this);
@@ -128,6 +81,40 @@ public class HarmarHttpServer {
 
     public void registerRouteHttp2(String method, String path, Router.Http2RouteHandler handler) {
         router.registerHttp2(method, path, handler);
+    }
+
+    // default image/jpeg
+    public void registerHttp2StaticFile(String path) {
+        registerRouteHttp2("GET", path, (request, stream, pathParams, hpackDynamicTable, streamId) -> {
+            Map<String, String> responseHeaders = new LinkedHashMap<>();
+            responseHeaders.put(":status", "200");
+            responseHeaders.put("server", "mini-http2");
+            responseHeaders.put("content-type", "image/jpeg");
+
+            byte[] headersPayload = new HpackEncoder(hpackDynamicTable).encode(responseHeaders);
+
+            Frame headersFrame = new Frame(new FrameHeader(
+                    headersPayload.length, FrameType.HEADERS, EnumSet.of(FrameFlag.END_HEADERS), streamId
+            ), headersPayload);
+
+            Path rootPath = Paths.get(this.rootDir).toAbsolutePath();
+            Path requestPath = normalizePath(rootPath,path);
+
+            File file = new File(requestPath.toUri());
+
+            try {
+                byte[] fileBytes = java.nio.file.Files.readAllBytes(file.toPath());
+
+                Frame dataFrame = new Frame(new FrameHeader(
+                        fileBytes.length, FrameType.DATA, EnumSet.of(FrameFlag.END_STREAM), streamId
+                ), fileBytes);
+
+                stream.queueResponse(headersFrame);
+                stream.queueResponse(dataFrame);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        });
     }
 
     public void start() throws IOException {
