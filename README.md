@@ -1,124 +1,214 @@
-# 🌐 HarmarHttpServer
+# HarmarHttp 🚀
 
-**HarmarHttpServer** 是一个用 Java 开发的轻量级 HTTP 服务器，具有 🚦 路由系统、📂 静态文件服务、🛡️ 安全防护 和 📊 性能监控 等功能。
+一个 **从零实现的 Java HTTP 服务器**，支持 **HTTP/1.1、HTTPS 以及 HTTP/2**，重点关注协议细节、底层实现与工程结构，适合作为 **HTTP/HTTP2 学习项目、网络编程参考实现**。
 
----
-
-## 🚀 主要功能
-
-- ⚙️ **HTTP方法支持**：GET、POST、HEAD
-- 🧭 **灵活的路由系统**：支持静态路由和参数化路由（如 `/api/user/{id}`）
-- 📁 **静态文件服务**：高效的文件缓存机制，支持大文件服务
-- 🛡️ **安全防护**：内置 DOS 防御机制，防止暴力请求攻击
-- 📈 **性能监控**：实时跟踪请求数、响应时间、并发连接等指标
-- 🔍 **监控端点**：提供 API 以获取服务器运行状态和性能数据
-- 🔗 **连接管理**：支持持久连接和连接池管理
-- 🧾 **HTTP头部处理**：支持 Host 头和 Cookie 解析
+> ⚠️ 本项目以学习与研究为目的，不建议直接用于生产环境。
 
 ---
 
-## 🧩 核心组件
+## ✨ 项目特性
 
-### 1️⃣ 服务器核心 (HarmarHttpServer)
-主要的服务器类，负责初始化组件、监听端口、处理请求等核心功能。
+### 🌐 协议支持
 
-### 2️⃣ 请求处理
-- 📥 **HttpRequest**：封装 HTTP 请求信息
-- 📤 **HttpResponse**：构建和发送 HTTP 响应
-- 🧭 **Router**：路由注册和匹配系统
-- 📝 **PostRequestHandler**：处理 POST 请求，支持表单和 JSON 数据
-- 🧱 **HeadRequestHandler**：处理 HEAD 请求
-- 🧾 **StdHeadersHandler**：处理标准 HTTP 头部
+* **HTTP/1.1**
 
-### 3️⃣ 文件服务
-- 🗂️ **FileCacheManager**：高效的 LRU 文件缓存管理器，支持文件修改时间检查和缓存大小控制
+   * GET / POST / HEAD
+   * Keep-Alive
+   * Chunked Transfer-Encoding
+* **HTTPS (TLS 1.2 / 1.3)**
 
-### 4️⃣ 安全与监控
-- 🛡️ **DosDefender**：DOS 攻击防御系统，基于时间窗口的请求限制
-- ⏱️ **PerformanceMonitor**：性能监控系统，跟踪请求统计和响应时间
-- 📡 **MonitorEndpoints**：提供监控 API 端点
-- 🔌 **ConnectionManager**：管理客户端连接
+   * 基于 Netty 的 TLS 支持
+   * ALPN 协议协商
+* **HTTP/2**
+
+   * 帧级实现（HEADERS / DATA / SETTINGS / GOAWAY / RST_STREAM 等）
+   * **HPACK 头部压缩（含 Huffman 编码）**
+   * 多路复用（Stream）
+   * 流管理与调度（Scheduler）
 
 ---
 
-## ⚡ 快速开始
+## 🏗️ 架构概览
 
-### 🧰 编译与运行
-
-1. 确保安装了 Java 开发环境和 Maven
-2. 编译项目：
-   ```bash
-   mvn clean compile
-   ```
-3. 运行服务器：
-   ```bash
-   mvn exec:java -Dexec.mainClass="org.example.HarmarHttpServer"
-   ```
-
-### 🌍 默认端口和目录
-
-- 🔢 默认端口：`8080`
-- 📂 默认静态文件目录：当前工作目录
-
----
-
-## 🔀 路由示例
-
-服务器内置了以下路由示例：
-
-| 方法 | 路径 | 功能描述 |
-|------|------|-----------|
-| 🟩 **GET** | `/api/time` | 返回当前时间 |
-| 🟩 **GET** | `/api/user/{id}` | 根据 ID 获取用户信息（参数化路由示例） |
-| 🟧 **POST** | `/api/echo` | 回显请求体 |
-| 🟧 **POST** | `/api/login` | 处理登录请求 |
-| 🟩 **GET** | `/api/data` | 返回模拟数据 |
+```
+                ┌─────────────────────────┐
+                │     HarmarHttpServer     │
+                │     (核心协调入口)      │
+                └───────────┬─────────────┘
+                            │
+        ┌───────────────────┼────────────────────┐
+        │                   │                    │
+┌───────▼────────┐  ┌───────▼────────┐  ┌────────▼───────┐
+│ ConnectionMgr  │  │ NettyTlsServer │  │     Router     │
+│ (HTTP/1.x)     │  │ (HTTPS / h2)   │  │ 路由与分发     │
+└────────────────┘  └────────┬────────┘  └────────────────┘
+                              │
+                    ┌─────────▼─────────┐
+                    │   Http2Manager    │
+                    │ HTTP/2 核心实现   │
+                    └───────────────────┘
+```
 
 ---
 
-## 🛡️ 安全特性
+## 📦 模块说明
 
-- 🚫 **DOS 防御**：自动限制来自单一 IP 的请求频率
-- 🧱 **路径规范化**：防止路径遍历攻击
-- 📏 **请求体大小限制**：默认限制为 1MB
-- 🧾 **Content-Type 验证**：只接受指定的内容类型
+### 核心模块
 
----
+* **HarmarHttpServer**
 
-## ⚙️ 性能优化
+   * 服务器核心入口
+   * 组件初始化与协调
 
-- 💾 **文件缓存**：减少磁盘 I/O 操作
-- 🧵 **并发处理**：多线程处理请求
-- 🔁 **连接复用**：支持 HTTP Keep-Alive
+* **ConnectionManager**
 
----
+   * HTTP/1.x 连接管理
+   * 基于 `AsynchronousSocketChannel`
 
-## 🧠 配置选项
+* **NettyTlsServer**
 
-通过构造函数参数可配置以下选项：
+   * HTTPS / HTTP2 over TLS
+   * ALPN 协议选择（h2 / http1.1）
 
-- 服务器端口
-- 静态文件根目录
-- 文件缓存大小与条目数
-- DOS 防御参数（时间窗口、最大请求数）
-- 性能监控设置
+* **Router**
+
+   * 路由注册与分发
+   * 支持参数化路径 `/api/user/{id}`
 
 ---
 
-## 📡 监控端点
+### HTTP/2 实现（`http2/`）
 
-服务器提供内置的监控 API，可用于获取运行时统计信息与性能数据。
+* `Http2Manager`：HTTP/2 协议核心
+* `Frame / FrameDecoder`：帧解析
+* `HpackEncoder / HpackDecoder`：HPACK 实现
+* `Http2Stream`：流状态管理
+* `Scheduler`：响应调度与优先级
 
----
-
-## ⚠️ 注意事项
-
-- 💡 本服务器适合开发与测试环境，生产环境建议使用成熟 Web 服务器（如 Nginx / Apache）
-- 🧰 默认配置可根据负载灵活调整
-- 🔒 确保静态文件目录的权限设置合理
+➡️ **完全手写 HTTP/2 + HPACK，未依赖 Netty 的 HTTP/2 实现**
 
 ---
 
-## 📜 许可证
+### 🔐 安全模块
 
-**MIT License** 🪪  
+* **DosDefender**
+
+   * 基于滑动窗口的 IP 限流
+   * 防止 DoS / 资源耗尽攻击
+
+* **路径规范化**
+
+   * 防止目录遍历（`../`）攻击
+
+* **大文件并发限制**
+
+   * 单 IP 同时访问大文件数限制
+
+---
+
+### 📊 性能监控
+
+* **PerformanceMonitor**
+
+   * 请求总数 / 成功 / 失败
+   * 平均 / 最大 / 最小响应时间
+   * 并发连接数
+   * HTTP 状态码分布
+
+* **内置监控 API**
+
+| Endpoint   | 描述         |
+| ---------- | ---------- |
+| `/health`  | 健康检查       |
+| `/metrics` | 性能指标       |
+| `/stats`   | 统计数据       |
+| `/reset`   | 重置统计（POST） |
+
+---
+
+### 📁 静态文件服务
+
+* LRU 文件缓存
+* 文件修改时间自动失效
+* 减少磁盘 IO
+* 支持图片 / HTML / JS / ZIP 等
+
+---
+
+## 📂 项目结构
+
+```
+src/main/java/org/example
+├── HarmarHttpServer.java
+├── Main.java
+├── Router.java
+├── ConnectionManager.java
+├── http2/            # HTTP/2 协议实现
+├── https/            # HTTPS / TLS
+├── monitor/          # 性能监控
+├── security/         # 安全模块
+├── protocol/         # HTTP 协议解析
+└── connection/       # 底层连接抽象
+```
+
+---
+
+## 🚀 快速开始
+
+### 构建
+
+```bash
+mvn clean compile
+```
+
+### 运行
+
+```bash
+mvn exec:java -Dexec.mainClass="org.example.Main"
+```
+
+---
+
+## 🌍 访问示例
+
+| 协议            | 地址                                                         |
+| ------------- | ---------------------------------------------------------- |
+| HTTP/1.1      | [http://localhost:80](http://localhost:80)                 |
+| HTTPS / HTTP2 | [https://localhost:8443](https://localhost:8443)           |
+| Metrics       | [http://localhost:80/metrics](http://localhost:80/metrics) |
+
+示例资源：
+
+* `/index.html`
+* `/nijika.jpg`
+* `/big_file.zip`
+
+---
+
+## 🎯 适用场景
+
+✅ 学习 HTTP / HTTP2 协议细节
+✅ 网络编程与 NIO 实践
+✅ 简历 / 技术展示项目
+
+❌ 不适合高并发生产环境
+❌ 不提供完整 Web 框架能力
+
+---
+
+## 🧠 项目亮点
+
+* **完整 HTTP/2 + HPACK 手写实现**
+* 清晰的模块化设计
+* 安全与性能意识（限流 / 缓存 / 监控）
+* 非黑盒，适合深入阅读源码
+
+---
+
+## 📜 License
+
+MIT License
+
+---
+
+如果你正在学习 **HTTP / HTTP2 / 网络编程 / Java NIO**，这个项目会非常适合你 👋
